@@ -1,203 +1,34 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Research Agent</title>
-    <style>
-        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        body { background-color: #f4f6f8; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-        .card { background: white; padding: 2.5rem; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); width: 100%; max-width: 480px; }
-        h2 { margin-top: 0; color: #1a1d20; }
-        .form-group { margin-bottom: 1.2rem; }
-        label { display: block; margin-bottom: 0.4rem; font-weight: 600; font-size: 0.9rem; color: #495057; }
-        input[type="text"], input[type="password"], textarea {
-            width: 100%; padding: 0.75rem; border: 1px solid #ced4da; border-radius: 6px; font-size: 1rem;
-        }
-        button {
-            width: 100%; padding: 0.75rem; background-color: #2563eb; color: white; border: none;
-            border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s;
-        }
-        button:hover { background-color: #1d4ed8; }
-        .btn-logout { background-color: #dc2626; margin-top: 1rem; }
-        .btn-logout:hover { background-color: #b91c1c; }
-        .hidden { display: none; }
-        .error-msg { color: #dc2626; font-size: 0.85rem; margin-top: 0.5rem; }
-        .output-box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 1rem; border-radius: 6px; margin-top: 1rem; white-space: pre-wrap; font-size: 0.9rem; }
-    </style>
-</head>
-<body>
-
-    <div class="card">
-        <!-- LOGIN SECTION -->
-        <div id="login-section">
-            <h2>🔑 Research Login</h2>
-            <form id="login-form">
-                <div class="form-group">
-                    <label for="username">Username</label>
-                    <input type="text" id="username" required placeholder="researcher">
-                </div>
-                <div class="form-group">
-                    <label for="password">Password</label>
-                    <input type="password" id="password" required placeholder="password123">
-                </div>
-                <button type="submit">Sign In</button>
-                <div id="login-error" class="error-msg hidden"></div>
-            </form>
-        </div>
-
-        <!-- AGENT SECTION (HIDDEN UNTIL AUTHENTICATED) -->
-        <div id="agent-section" class="hidden">
-            <h2>🤖 AI Research Agent</h2>
-            <p id="user-greeting" style="color: #64748b; font-size: 0.9rem;"></p>
-            
-            <form id="research-form">
-                <div class="form-group">
-                    <label for="query">Research Prompt</label>
-                    <textarea id="query" rows="4" required placeholder="Ask your agent to research a topic..."></textarea>
-                </div>
-                <button type="submit" id="submit-btn">Run Research</button>
-            </form>
-
-            <div id="output" class="output-box hidden"></div>
-            <button id="logout-btn" class="btn-logout">Logout</button>
-        </div>
-    </div>
-
-    <script>
-        const API_URL = "http://127.0.0.1:8000/api";
-
-        // Elements
-        const loginSection = document.getElementById('login-section');
-        const agentSection = document.getElementById('agent-section');
-        const loginForm = document.getElementById('login-form');
-        const researchForm = document.getElementById('research-form');
-        const loginError = document.getElementById('login-error');
-        const userGreeting = document.getElementById('user-greeting');
-        const outputBox = document.getElementById('output');
-        const logoutBtn = document.getElementById('logout-btn');
-
-        // Check if user is already logged in on page load
-        window.addEventListener('DOMContentLoaded', () => {
-            const token = localStorage.getItem('access_token');
-            if (token) {
-                showAgentUI();
-            }
-        });
-
-        // 1. HANDLE LOGIN
-        loginForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            loginError.classList.add('hidden');
-
-            // OAuth2 Form Data format required by FastAPI
-            const formData = new URLSearchParams();
-            formData.append('username', document.getElementById('username').value);
-            formData.append('password', document.getElementById('password').value);
-
-            try {
-                const response = await fetch(`${API_URL}/login`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: formData
-                });
-
-                if (!response.ok) {
-                    throw new Error('Invalid username or password');
-                }
-
-                const data = await response.json();
-                
-                // SAVE TOKEN TO LOCALSTORAGE
-                localStorage.setItem('access_token', data.access_token);
-                showAgentUI();
-            } catch (err) {
-                loginError.textContent = err.message;
-                loginError.classList.remove('hidden');
-            }
-        });
-
-        // 2. HANDLE PROTECTED RESEARCH API CALL
-        researchForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const query = document.getElementById('query').value;
-            const token = localStorage.getItem('access_token');
-
-            outputBox.classList.remove('hidden');
-            outputBox.textContent = "⏳ Running agent research...";
-
-            try {
-                // SEND AUTHORIZATION HEADER WITH BEARER TOKEN
-                const response = await fetch(`${API_URL}/research?query=${encodeURIComponent(query)}`, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                    }
-                });
-
-                if (response.status === 401) {
-                    // Token expired or invalid
-                    alert("Session expired. Please log in again.");
-                    logout();
-                    return;
-                }
-
-                const data = await response.json();
-                outputBox.textContent = JSON.stringify(data, null, 2);
-            } catch (err) {
-                outputBox.textContent = "Error running research query: " + err.message;
-            }
-        });
-
-        // 3. UI TOGGLES & LOGOUT
-        function showAgentUI() {
-            loginSection.classList.add('hidden');
-            agentSection.classList.remove('hidden');
-            userGreeting.textContent = "Authenticated & ready for research.";
-        }
-
-        function logout() {
-            localStorage.removeItem('access_token');
-            agentSection.classList.add('hidden');
-            loginSection.classList.remove('hidden');
-            outputBox.classList.add('hidden');
-            loginForm.reset();
-        }
-
-        logoutBtn.addEventListener('click', logout);
-    </script>
-</body>
-</html>
-
-
-
-
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Research Agent</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg: #0a0a0a;
-    --surface: #111111;
-    --border: #1e1e1e;
-    --border-bright: #2a2a2a;
-    --text: #e8e8e8;
-    --muted: #555;
-    --accent: #c8ff00;
-    --accent-dim: rgba(200,255,0,0.08);
-    --accent-border: rgba(200,255,0,0.2);
-    --red: #ff4444;
-    --mono: 'JetBrains Mono', monospace;
-    --sans: 'Inter', sans-serif;
+    --bg:             #0a0a0a;
+    --surface:        #111111;
+    --surface-2:      #161616;
+    --border:         #1e1e1e;
+    --border-bright:  #2a2a2a;
+    --text:           #e8e8e8;
+    --muted:          #555;
+    --muted-2:        #888;
+    --accent:         #c8ff00;
+    --accent-dim:     rgba(200,255,0,0.07);
+    --accent-border:  rgba(200,255,0,0.18);
+    --red:            #ff4444;
+    --red-dim:        rgba(255,68,68,0.08);
+    --red-border:     rgba(255,68,68,0.2);
+    --green:          #22c55e;
+    --mono:           'JetBrains Mono', monospace;
+    --sans:           'Inter', sans-serif;
+    --radius:         10px;
+    --radius-lg:      14px;
   }
 
   html, body {
@@ -210,19 +41,26 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* ── LAYOUT ── */
+  /* ═══════════════════════════════════════════════════
+     SHARED LAYOUT
+  ═══════════════════════════════════════════════════ */
   .shell {
     min-height: 100vh;
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: 56px 1fr;
   }
 
   header {
     border-bottom: 1px solid var(--border);
-    padding: 20px 40px;
+    padding: 0 40px;
     display: flex;
     align-items: center;
     gap: 12px;
+    position: sticky;
+    top: 0;
+    background: rgba(10,10,10,0.92);
+    backdrop-filter: blur(12px);
+    z-index: 100;
   }
 
   .logo-dot {
@@ -231,37 +69,298 @@
     background: var(--accent);
     box-shadow: 0 0 8px var(--accent);
     animation: pulse 2s ease-in-out infinite;
+    flex-shrink: 0;
   }
 
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
   .logo-text {
     font-family: var(--mono);
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 500;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.1em;
     color: var(--text);
   }
 
-  .logo-tag {
+  .header-right {
     margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .header-user {
     font-family: var(--mono);
     font-size: 11px;
     color: var(--muted);
     letter-spacing: 0.05em;
   }
 
+  .header-user span {
+    color: var(--accent);
+  }
+
+  .btn-header-logout {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    background: transparent;
+    border: 1px solid var(--border-bright);
+    color: var(--muted);
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-header-logout:hover { border-color: var(--red); color: var(--red); }
+
   main {
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding: 60px 20px;
+    padding: 60px 20px 80px;
   }
 
-  .container {
+  /* ═══════════════════════════════════════════════════
+     AUTH PAGES WRAPPER
+  ═══════════════════════════════════════════════════ */
+  .auth-wrapper {
+    width: 100%;
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .auth-logo-block {
+    text-align: center;
+  }
+
+  .auth-logo-block .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 32px;
+  }
+
+  .auth-logo-block .brand-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  .auth-logo-block .brand-name {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    color: var(--text);
+  }
+
+  .auth-heading {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: #fff;
+    line-height: 1.2;
+    margin-bottom: 6px;
+  }
+
+  .auth-sub {
+    font-size: 13px;
+    color: var(--muted-2);
+  }
+
+  /* ── Auth Card ── */
+  .auth-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* ── Form fields ── */
+  .field { display: flex; flex-direction: column; gap: 7px; }
+
+  .field label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--muted-2);
+    text-transform: uppercase;
+  }
+
+  .input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .input-icon {
+    position: absolute;
+    left: 13px;
+    color: var(--muted);
+    font-size: 15px;
+    pointer-events: none;
+    line-height: 1;
+  }
+
+  .field input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius);
+    padding: 11px 14px 11px 38px;
+    font-family: var(--sans);
+    font-size: 14px;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .field input::placeholder { color: var(--muted); }
+
+  .field input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+  }
+
+  .field input.err {
+    border-color: var(--red);
+    box-shadow: 0 0 0 3px var(--red-dim);
+  }
+
+  .field-error {
+    font-size: 12px;
+    color: var(--red);
+    min-height: 16px;
+  }
+
+  /* ── Password toggle ── */
+  .pw-toggle {
+    position: absolute;
+    right: 12px;
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 4px;
+    font-size: 15px;
+    transition: color 0.15s;
+    line-height: 1;
+  }
+  .pw-toggle:hover { color: var(--text); }
+
+  /* ── Password strength bar ── */
+  .pw-strength { display: flex; gap: 4px; margin-top: 4px; }
+  .pw-bar {
+    flex: 1; height: 3px; border-radius: 2px;
+    background: var(--border-bright);
+    transition: background 0.3s;
+  }
+  .pw-bar.weak   { background: var(--red); }
+  .pw-bar.fair   { background: #f59e0b; }
+  .pw-bar.strong { background: var(--accent); }
+
+  /* ── Divider ── */
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .divider::before, .divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ── Buttons ── */
+  .btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 20px;
+    border-radius: var(--radius);
+    border: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.07em;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+    width: 100%;
+    position: relative;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #000;
+    font-weight: 600;
+  }
+  .btn-primary:hover:not(:disabled) { background: #d4ff1a; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(200,255,0,0.2); }
+  .btn-primary:active:not(:disabled) { transform: translateY(0); }
+  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--muted-2);
+    border: 1px solid var(--border-bright);
+  }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Alert banner ── */
+  .alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .alert-error  { background: var(--red-dim); border: 1px solid var(--red-border); color: #ff8080; }
+  .alert-success { background: rgba(34,197,94,0.07); border: 1px solid rgba(34,197,94,0.2); color: #4ade80; }
+  .alert-icon { flex-shrink: 0; margin-top: 1px; }
+
+  /* ── Switch link ── */
+  .auth-switch {
+    text-align: center;
+    font-size: 13px;
+    color: var(--muted-2);
+  }
+  .auth-switch a {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .auth-switch a:hover { text-decoration: underline; }
+
+  /* ── Spinner ── */
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid rgba(0,0,0,0.3);
+    border-top-color: #000;
+    border-radius: 50%;
+    animation: spin 0.65s linear infinite;
+    display: inline-block;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ═══════════════════════════════════════════════════
+     AGENT UI
+  ═══════════════════════════════════════════════════ */
+  .agent-wrapper {
     width: 100%;
     max-width: 720px;
     display: flex;
@@ -269,44 +368,37 @@
     gap: 32px;
   }
 
-  /* ── HERO ── */
   .hero h1 {
     font-size: 32px;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    line-height: 1.15;
     color: #fff;
   }
-
-  .hero h1 span {
-    color: var(--accent);
-  }
-
+  .hero h1 span { color: var(--accent); }
   .hero p {
     margin-top: 10px;
     color: var(--muted);
     font-size: 14px;
     max-width: 480px;
+    line-height: 1.7;
   }
 
-  /* ── INPUT CARD ── */
+  /* ── Cards ── */
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: var(--radius-lg);
     padding: 24px;
   }
 
-  .input-row {
-    display: flex;
-    gap: 10px;
-  }
+  .input-row { display: flex; gap: 10px; }
 
   input[type="text"] {
     flex: 1;
     background: var(--bg);
     border: 1px solid var(--border-bright);
-    border-radius: 8px;
+    border-radius: var(--radius);
     padding: 12px 16px;
     font-family: var(--sans);
     font-size: 14px;
@@ -314,17 +406,12 @@
     outline: none;
     transition: border-color 0.2s;
   }
-
   input[type="text"]::placeholder { color: var(--muted); }
+  input[type="text"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
 
-  input[type="text"]:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-dim);
-  }
-
-  .btn {
+  .btn-plan {
     padding: 12px 20px;
-    border-radius: 8px;
+    border-radius: var(--radius);
     border: none;
     font-family: var(--mono);
     font-size: 12px;
@@ -333,43 +420,53 @@
     cursor: pointer;
     transition: all 0.15s;
     white-space: nowrap;
-  }
-
-  .btn-primary {
     background: var(--accent);
     color: #000;
   }
-
-  .btn-primary:hover { background: #d4ff1a; }
-  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
-
-  .btn-ghost {
-    background: transparent;
-    color: var(--text);
-    border: 1px solid var(--border-bright);
-  }
-
-  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-plan:hover { background: #d4ff1a; }
+  .btn-plan:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .btn-approve {
-    background: var(--accent);
-    color: #000;
     width: 100%;
     padding: 14px;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: var(--radius);
+    font-family: var(--mono);
     font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.15s;
     margin-top: 20px;
   }
-
   .btn-approve:hover { background: #d4ff1a; }
 
-  /* ── QUERY PLAN ── */
+  .btn-reject {
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    color: var(--muted-2);
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-top: 8px;
+  }
+  .btn-reject:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ── Plan ── */
   .plan-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     margin-bottom: 16px;
   }
-
   .plan-label {
     font-family: var(--mono);
     font-size: 11px;
@@ -377,7 +474,6 @@
     color: var(--muted);
     text-transform: uppercase;
   }
-
   .query-count {
     font-family: var(--mono);
     font-size: 11px;
@@ -387,7 +483,6 @@
     padding: 2px 8px;
     border-radius: 4px;
   }
-
   .query-list {
     display: flex;
     flex-direction: column;
@@ -395,11 +490,9 @@
     max-height: 320px;
     overflow-y: auto;
   }
-
   .query-list::-webkit-scrollbar { width: 4px; }
   .query-list::-webkit-scrollbar-track { background: transparent; }
   .query-list::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
-
   .query-item {
     display: flex;
     align-items: flex-start;
@@ -412,20 +505,10 @@
     color: #ccc;
     transition: border-color 0.15s;
   }
-
   .query-item:hover { border-color: var(--border-bright); }
   .query-item:hover .query-remove { opacity: 1; }
-
-  .query-num {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--muted);
-    min-width: 20px;
-    padding-top: 1px;
-  }
-
+  .query-num { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 20px; padding-top: 1px; }
   .query-text { flex: 1; }
-
   .query-remove {
     opacity: 0;
     background: none;
@@ -438,9 +521,7 @@
     transition: color 0.15s, opacity 0.15s;
     flex-shrink: 0;
   }
-
   .query-remove:hover { color: var(--red); }
-
   .reasoning-box {
     margin-top: 14px;
     padding: 12px;
@@ -452,166 +533,209 @@
     line-height: 1.6;
   }
 
-  /* ── PROGRESS ── */
+  /* ── Progress ── */
   .progress-section { display: flex; flex-direction: column; gap: 16px; }
-
-  .progress-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .progress-topic {
-    font-size: 13px;
-    color: var(--muted);
-  }
-
-  .progress-pct {
-    font-family: var(--mono);
-    font-size: 13px;
-    color: var(--accent);
-  }
-
-  .progress-bar-wrap {
-    height: 2px;
-    background: var(--border);
-    border-radius: 1px;
-    overflow: hidden;
-  }
-
-  .progress-bar-fill {
-    height: 100%;
-    background: var(--accent);
-    border-radius: 1px;
-    transition: width 0.6s ease;
-    box-shadow: 0 0 8px var(--accent);
-  }
-
-  .node-log {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
+  .progress-header { display: flex; align-items: center; justify-content: space-between; }
+  .progress-topic { font-size: 13px; color: var(--muted); }
+  .progress-pct { font-family: var(--mono); font-size: 13px; color: var(--accent); }
+  .progress-bar-wrap { height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }
+  .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 1px; transition: width 0.6s ease; box-shadow: 0 0 8px var(--accent); }
+  .node-log { display: flex; flex-direction: column; gap: 4px; }
   .node-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--muted);
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 6px;
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
     transition: all 0.2s;
   }
-
-  .node-item.active {
-    background: var(--accent-dim);
-    border: 1px solid var(--accent-border);
-    color: var(--accent);
-  }
-
-  .node-item.done {
-    color: #555;
-  }
-
-  .node-item.done .node-icon { color: #3a3a3a; }
-
+  .node-item.active { background: var(--accent-dim); border: 1px solid var(--accent-border); color: var(--accent); }
+  .node-item.done   { color: #444; }
   .node-icon { font-size: 14px; width: 18px; text-align: center; }
 
-  /* ── RESULT ── */
+  /* ── Result ── */
   .result-card {
     background: var(--surface);
     border: 1px solid var(--accent-border);
-    border-radius: 12px;
-    padding: 28px;
+    border-radius: var(--radius-lg);
+    padding: 36px;
     text-align: center;
   }
-
-  .result-title {
-    font-size: 18px;
-    font-weight: 600;
-    color: #fff;
-    margin-bottom: 6px;
-  }
-
-  .result-sub {
-    font-size: 13px;
-    color: var(--muted);
-    margin-bottom: 24px;
-  }
-
-  .result-actions {
-    display: flex;
-    gap: 10px;
-    justify-content: center;
-  }
-
-  .btn-view {
-    background: var(--accent);
-    color: #000;
-    padding: 12px 28px;
-    font-size: 13px;
-  }
-
-  .btn-download {
-    background: transparent;
-    color: var(--text);
-    border: 1px solid var(--border-bright);
-    padding: 12px 28px;
-    font-size: 13px;
-  }
-
-  .btn-download:hover { border-color: var(--accent); color: var(--accent); }
-
-  .btn-new {
-    background: transparent;
-    color: var(--muted);
-    border: 1px solid var(--border);
-    padding: 12px 28px;
-    font-size: 13px;
-    margin-top: 12px;
-  }
-
+  .result-title { font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 6px; }
+  .result-sub { font-size: 13px; color: var(--muted); margin-bottom: 28px; }
+  .result-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .btn-view { background: var(--accent); color: #000; padding: 12px 28px; border: none; border-radius: var(--radius); font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: 0.05em; cursor: pointer; transition: background 0.15s; }
+  .btn-view:hover { background: #d4ff1a; }
+  .btn-dl { background: transparent; color: var(--text); border: 1px solid var(--border-bright); padding: 12px 28px; border-radius: var(--radius); font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.05em; cursor: pointer; transition: all 0.15s; }
+  .btn-dl:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-new { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 11px 28px; border-radius: var(--radius); font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.05em; cursor: pointer; transition: all 0.15s; margin-top: 12px; }
   .btn-new:hover { color: var(--text); border-color: var(--border-bright); }
 
-  /* ── ERROR ── */
+  /* ── Error box ── */
   .error-box {
     padding: 14px 16px;
-    background: rgba(255,68,68,0.06);
-    border: 1px solid rgba(255,68,68,0.2);
-    border-radius: 8px;
+    background: var(--red-dim);
+    border: 1px solid var(--red-border);
+    border-radius: var(--radius);
     font-family: var(--mono);
     font-size: 12px;
     color: var(--red);
   }
 
-  /* ── HIDDEN ── */
-  .hidden { display: none !important; }
-
-  /* ── SPINNER ── */
-  .spinner {
+  /* ── Spinner (small dark) ── */
+  .spinner-dark {
     width: 14px; height: 14px;
-    border: 2px solid var(--border-bright);
-    border-top-color: var(--accent);
+    border: 2px solid rgba(0,0,0,0.25);
+    border-top-color: #000;
     border-radius: 50%;
-    animation: spin 0.7s linear infinite;
+    animation: spin 0.65s linear infinite;
     display: inline-block;
   }
 
-  @keyframes spin { to { transform: rotate(360deg); } }
+  /* ── Utility ── */
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
 <div class="shell">
+
+  <!-- ══════════ HEADER ══════════ -->
   <header>
     <div class="logo-dot"></div>
     <span class="logo-text">RESEARCH_AGENT</span>
-    <span class="logo-tag">v1.0 · LangGraph + Llama-3.3-70B</span>
+    <div class="header-right" id="header-right">
+      <span class="header-user hidden" id="header-username"></span>
+      <button class="btn-header-logout hidden" id="header-logout-btn">SIGN OUT</button>
+    </div>
   </header>
 
+  <!-- ══════════ MAIN ══════════ -->
   <main>
-    <div class="container">
+
+    <!-- ─────────── AUTH PAGES ─────────── -->
+    <div class="auth-wrapper" id="auth-view">
+
+      <div class="auth-logo-block">
+        <div class="brand">
+          <div class="brand-dot"></div>
+          <span class="brand-name">RESEARCH_AGENT</span>
+        </div>
+
+        <!-- Login heading (default visible) -->
+        <div id="heading-login">
+          <div class="auth-heading">Welcome back</div>
+          <div class="auth-sub">Sign in to your account to continue</div>
+        </div>
+        <!-- Register heading (hidden) -->
+        <div id="heading-register" class="hidden">
+          <div class="auth-heading">Create an account</div>
+          <div class="auth-sub">Start your first deep research session</div>
+        </div>
+      </div>
+
+      <!-- ── LOGIN FORM ── -->
+      <div class="auth-card" id="login-card">
+        <div id="login-alert" class="alert alert-error hidden">
+          <span class="alert-icon">⚠</span>
+          <span id="login-alert-msg"></span>
+        </div>
+
+        <div class="field">
+          <label for="li-username">Username</label>
+          <div class="input-wrap">
+            <span class="input-icon">◈</span>
+            <input type="text" id="li-username" placeholder="your_username" autocomplete="username" />
+          </div>
+          <span class="field-error" id="li-username-err"></span>
+        </div>
+
+        <div class="field">
+          <label for="li-password">Password</label>
+          <div class="input-wrap">
+            <span class="input-icon">⬡</span>
+            <input type="password" id="li-password" placeholder="••••••••" autocomplete="current-password" />
+            <button type="button" class="pw-toggle" id="li-pw-toggle" aria-label="Toggle password visibility">👁</button>
+          </div>
+          <span class="field-error" id="li-password-err"></span>
+        </div>
+
+        <button class="btn btn-primary" id="login-btn" onclick="submitLogin()">
+          SIGN IN →
+        </button>
+      </div>
+
+      <div class="auth-switch">
+        Don't have an account? <a onclick="showRegister()">Create one</a>
+      </div>
+
+      <!-- ── REGISTER FORM ── -->
+      <div class="auth-card hidden" id="register-card">
+        <div id="register-alert" class="alert hidden">
+          <span class="alert-icon" id="reg-alert-icon">⚠</span>
+          <span id="register-alert-msg"></span>
+        </div>
+
+        <div class="field">
+          <label for="rg-username">Username</label>
+          <div class="input-wrap">
+            <span class="input-icon">◈</span>
+            <input type="text" id="rg-username" placeholder="your_username" autocomplete="username"
+                   oninput="clearFieldErr('rg-username')" />
+          </div>
+          <span class="field-error" id="rg-username-err"></span>
+        </div>
+
+        <div class="field">
+          <label for="rg-email">Email address</label>
+          <div class="input-wrap">
+            <span class="input-icon">@</span>
+            <input type="text" id="rg-email" placeholder="you@example.com" autocomplete="email"
+                   oninput="clearFieldErr('rg-email')" />
+          </div>
+          <span class="field-error" id="rg-email-err"></span>
+        </div>
+
+        <div class="field">
+          <label for="rg-password">Password</label>
+          <div class="input-wrap">
+            <span class="input-icon">⬡</span>
+            <input type="password" id="rg-password" placeholder="Min. 8 characters"
+                   autocomplete="new-password"
+                   oninput="updatePwStrength(this.value); clearFieldErr('rg-password')" />
+            <button type="button" class="pw-toggle" id="rg-pw-toggle" aria-label="Toggle password visibility">👁</button>
+          </div>
+          <div class="pw-strength">
+            <div class="pw-bar" id="pb1"></div>
+            <div class="pw-bar" id="pb2"></div>
+            <div class="pw-bar" id="pb3"></div>
+            <div class="pw-bar" id="pb4"></div>
+          </div>
+          <span class="field-error" id="rg-password-err"></span>
+        </div>
+
+        <div class="field">
+          <label for="rg-confirm">Confirm password</label>
+          <div class="input-wrap">
+            <span class="input-icon">⬡</span>
+            <input type="password" id="rg-confirm" placeholder="Repeat password"
+                   autocomplete="new-password"
+                   oninput="clearFieldErr('rg-confirm')" />
+          </div>
+          <span class="field-error" id="rg-confirm-err"></span>
+        </div>
+
+        <button class="btn btn-primary" id="register-btn" onclick="submitRegister()">
+          CREATE ACCOUNT →
+        </button>
+      </div>
+
+      <div class="auth-switch hidden" id="switch-to-login">
+        Already have an account? <a onclick="showLogin()">Sign in</a>
+      </div>
+
+    </div><!-- /auth-wrapper -->
+
+
+    <!-- ─────────── AGENT UI ─────────── -->
+    <div class="agent-wrapper hidden" id="agent-view">
 
       <!-- HERO -->
       <div class="hero">
@@ -623,7 +747,7 @@
       <div id="step-input" class="card">
         <div class="input-row">
           <input type="text" id="topic-input" placeholder="e.g. The Rise and Fall of Nokia" autocomplete="off" />
-          <button class="btn btn-primary" id="plan-btn" onclick="planResearch()">PLAN →</button>
+          <button class="btn-plan" id="plan-btn" onclick="planResearch()">PLAN →</button>
         </div>
       </div>
 
@@ -635,8 +759,8 @@
         </div>
         <div class="query-list" id="query-list"></div>
         <div class="reasoning-box" id="reasoning-box"></div>
-        <button class="btn btn-approve" onclick="startResearch()">APPROVE & START RESEARCH →</button>
-        <button class="btn btn-ghost" style="width:100%;margin-top:8px;padding:12px;" onclick="rejectPlan()">← REJECT & REPLAN</button>
+        <button class="btn-approve" onclick="startResearch()">APPROVE & START RESEARCH →</button>
+        <button class="btn-reject" onclick="rejectPlan()">← REJECT & REPLAN</button>
       </div>
 
       <!-- STEP 3: PROGRESS -->
@@ -658,229 +782,494 @@
         <div class="result-title">Report Ready</div>
         <div class="result-sub" id="result-sub">Your research report has been generated.</div>
         <div class="result-actions">
-          <button class="btn btn-view" id="view-btn" onclick="viewPDF()">VIEW REPORT</button>
-          <button class="btn btn-download btn-ghost" id="download-btn" onclick="downloadPDF()">DOWNLOAD PDF</button>
+          <button class="btn-view" onclick="viewPDF()">VIEW REPORT</button>
+          <button class="btn-dl" onclick="downloadPDF()">DOWNLOAD PDF</button>
         </div>
         <br/>
-        <button class="btn btn-new btn-ghost" onclick="resetUI()">← NEW RESEARCH</button>
+        <button class="btn-new" onclick="resetUI()">← NEW RESEARCH</button>
       </div>
 
       <!-- ERROR -->
-      <div id="step-error" class="error-box hidden" id="error-box"></div>
+      <div id="step-error" class="error-box hidden"></div>
 
-    </div>
+    </div><!-- /agent-wrapper -->
+
   </main>
-</div>
+</div><!-- /shell -->
 
 <script>
-  let sessionId = null;
-  let pollInterval = null;
-  let approvedQueries = [];
+/* ═══════════════════════════════════════════════════════
+   STATE
+═══════════════════════════════════════════════════════ */
+let sessionId    = null;
+let pollInterval = null;
+let approvedQueries = [];
 
-  const NODES = [
-    { key: "strategist",        label: "STRATEGIST",         icon: "◈" },
-    { key: "crawler",           label: "CRAWLER",            icon: "◎" },
-    { key: "architect",         label: "ARCHITECT",          icon: "◇" },
-    { key: "section_challenger",label: "CHALLENGER",         icon: "◆" },
-    { key: "targeted_rewrite",  label: "REWRITER",           icon: "◈" },
-    { key: "factcheck",         label: "FACTCHECK",          icon: "◉" },
-    { key: "critic",            label: "CRITIC",             icon: "◐" },
-    { key: "exporting",         label: "EXPORTING PDF",      icon: "◑" },
-    { key: "done",              label: "COMPLETE",           icon: "●" },
-  ];
+const NODES = [
+  { key: "strategist",         label: "STRATEGIST",    icon: "◈" },
+  { key: "crawler",            label: "CRAWLER",       icon: "◎" },
+  { key: "architect",          label: "ARCHITECT",     icon: "◇" },
+  { key: "section_challenger", label: "CHALLENGER",    icon: "◆" },
+  { key: "targeted_rewrite",   label: "REWRITER",      icon: "◈" },
+  { key: "factcheck",          label: "FACTCHECK",     icon: "◉" },
+  { key: "critic",             label: "CRITIC",        icon: "◐" },
+  { key: "exporting",          label: "EXPORTING PDF", icon: "◑" },
+  { key: "done",               label: "COMPLETE",      icon: "●" },
+];
 
-  function show(id) { document.getElementById(id).classList.remove('hidden'); }
-  function hide(id) { document.getElementById(id).classList.add('hidden'); }
+/* ═══════════════════════════════════════════════════════
+   HELPERS
+═══════════════════════════════════════════════════════ */
+const $  = id => document.getElementById(id);
+const show = id => $(id).classList.remove('hidden');
+const hide = id => $(id).classList.add('hidden');
 
-  async function planResearch() {
-    const topic = document.getElementById('topic-input').value.trim();
-    if (!topic) return;
+function getToken() { return localStorage.getItem('access_token'); }
+function setToken(t) { localStorage.setItem('access_token', t); }
+function clearToken() { localStorage.removeItem('access_token'); }
 
-    const btn = document.getElementById('plan-btn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>';
+function authHeaders() {
+  return { 'Authorization': `Bearer ${getToken()}`, 'Content-Type': 'application/json' };
+}
 
-    try {
-      const res = await fetch('/research/plan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic })
-      });
+function setLoading(btnId, loading, label) {
+  const btn = $(btnId);
+  btn.disabled = loading;
+  btn.innerHTML = loading
+    ? `<span class="spinner${btnId === 'login-btn' || btnId === 'register-btn' ? '' : '-dark'}"></span>`
+    : label;
+}
 
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      sessionId = data.session_id;
+function clearFieldErr(fieldId) {
+  const inp = $(fieldId);
+  const err = $(`${fieldId}-err`);
+  if (inp) inp.classList.remove('err');
+  if (err) err.textContent = '';
+}
 
-      // Render query plan
-      const list = document.getElementById('query-list');
-      approvedQueries = [...data.queries];
+function setFieldErr(fieldId, msg) {
+  const inp = $(fieldId);
+  const err = $(`${fieldId}-err`);
+  if (inp) inp.classList.add('err');
+  if (err) err.textContent = msg;
+}
 
-      function renderQueries() {
-        list.innerHTML = approvedQueries.map((q, i) =>
-          `<div class="query-item" id="qi-${i}">
-            <span class="query-num">${String(i+1).padStart(2,'0')}</span>
-            <span class="query-text">${q}</span>
-            <button class="query-remove" onclick="removeQuery(${i})" title="Remove">×</button>
-          </div>`
-        ).join('');
-        document.getElementById('query-count').textContent = `${approvedQueries.length} queries`;
-      }
+function showAlert(alertId, msgId, msg, type = 'error') {
+  const el = $(alertId);
+  el.className = `alert alert-${type}`;
+  $(msgId).textContent = msg;
+  show(alertId);
+}
 
-      renderQueries();
-      window._renderQueries = renderQueries;
-      document.getElementById('reasoning-box').textContent = data.reasoning;
+function hideAlert(alertId) { hide(alertId); }
 
-      hide('step-input');
-      show('step-plan');
+/* ═══════════════════════════════════════════════════════
+   AUTH: PAGE SWITCHING
+═══════════════════════════════════════════════════════ */
+function showLogin() {
+  show('login-card');
+  hide('register-card');
+  show('heading-login');
+  hide('heading-register');
+  show('auth-view');
+  hide('switch-to-login');
+  // The default switch link is always visible when login card is shown
+  document.querySelector('.auth-switch:not(#switch-to-login)').classList.remove('hidden');
+}
 
-    } catch(e) {
-      showError(e.message);
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = 'PLAN →';
-    }
-  }
+function showRegister() {
+  hide('login-card');
+  show('register-card');
+  hide('heading-login');
+  show('heading-register');
+  show('switch-to-login');
+  document.querySelector('.auth-switch:not(#switch-to-login)').classList.add('hidden');
+}
 
-  function removeQuery(idx) {
-    approvedQueries.splice(idx, 1);
-    window._renderQueries();
-  }
+/* ═══════════════════════════════════════════════════════
+   AUTH: LOGIN
+═══════════════════════════════════════════════════════ */
+async function submitLogin() {
+  hideAlert('login-alert');
+  clearFieldErr('li-username');
+  clearFieldErr('li-password');
 
-  function rejectPlan() {
-    sessionId = null;
-    approvedQueries = [];
-    hide('step-plan');
-    show('step-input');
-    document.getElementById('topic-input').focus();
-  }
+  const username = $('li-username').value.trim();
+  const password = $('li-password').value;
 
-  async function startResearch() {
-    hide('step-plan');
-    show('step-progress');
+  if (!username) { setFieldErr('li-username', 'Username is required'); return; }
+  if (!password) { setFieldErr('li-password', 'Password is required'); return; }
 
-    const topic = document.getElementById('topic-input').value.trim();
-    document.getElementById('progress-topic').textContent = topic;
+  setLoading('login-btn', true);
 
-    // Render node log
-    const log = document.getElementById('node-log');
-    log.innerHTML = NODES.map(n =>
-      `<div class="node-item" id="node-${n.key}">
-        <span class="node-icon">${n.icon}</span>
-        <span>${n.label}</span>
-      </div>`
-    ).join('');
+  try {
+    const form = new URLSearchParams();
+    form.append('username', username);
+    form.append('password', password);
 
-    try {
-      const res = await fetch('/research/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, queries: approvedQueries })
-      });
-      if (!res.ok) throw new Error(await res.text());
-
-      pollInterval = setInterval(pollStatus, 2000);
-
-    } catch(e) {
-      showError(e.message);
-    }
-  }
-
-  async function pollStatus() {
-    try {
-      const res = await fetch(`/research/status/${sessionId}`);
-      const data = await res.json();
-
-      // Update progress bar
-      document.getElementById('progress-bar').style.width = data.progress + '%';
-      document.getElementById('progress-pct').textContent = data.progress + '%';
-
-      // Update node highlights
-      const currentIdx = NODES.findIndex(n => n.key === data.current_node);
-      NODES.forEach((n, i) => {
-        const el = document.getElementById(`node-${n.key}`);
-        if (!el) return;
-        el.classList.remove('active', 'done');
-        if (i < currentIdx) el.classList.add('done');
-        else if (i === currentIdx) el.classList.add('active');
-      });
-
-      if (data.status === 'done') {
-        clearInterval(pollInterval);
-        hide('step-progress');
-        show('step-result');
-        document.getElementById('result-sub').textContent =
-          `${document.getElementById('topic-input').value.trim()}`;
-      }
-
-      if (data.status === 'error') {
-        clearInterval(pollInterval);
-        hide('step-progress');
-        showError(data.error || 'Unknown error');
-      }
-
-    } catch(e) {
-      clearInterval(pollInterval);
-      showError(e.message);
-    }
-  }
-
-  function viewPDF() {
-    window.open(`/research/result/${sessionId}`, '_blank');
-  }
-
-  function downloadPDF() {
-    window.location.href = `/research/download/${sessionId}`;
-  }
-
-  function showError(msg) {
-    const el = document.getElementById('step-error');
-    if (msg.includes('Not enough sources')) {
-      el.innerHTML = '⚠ <strong>Topic not found on the web.</strong><br/>' + msg.split('(')[0].trim() + '<br/><small>Try a well-known company, technology, event, or person.</small><br/><br/><button class="btn btn-ghost" style="padding:8px 16px;font-size:12px;" onclick="resetUI()">← TRY AGAIN</button>';
-    } else if (msg.includes('rate limited') || msg.includes('try again in')) {
-      el.innerHTML = '⚠ <strong>API limit reached.</strong><br/>All inference keys are currently busy. Please try again in a few minutes.<br/><br/><span id="countdown-text" style="font-family:var(--mono);color:var(--accent);font-size:13px;">Retry available in 5:00</span><br/><br/><button class="btn btn-ghost" style="padding:8px 16px;font-size:12px;" id="retry-btn" onclick="resetUI()" disabled>← TRY AGAIN</button>';
-      el.classList.remove('hidden');
-      startCountdown(5 * 60);
-      return;
-    } else {
-      el.innerHTML = '⚠ ' + msg + '<br/><br/><button class="btn btn-ghost" style="padding:8px 16px;font-size:12px;" onclick="resetUI()">← TRY AGAIN</button>';
-    }
-    el.classList.remove('hidden');
-  }
-
-  function startCountdown(seconds) {
-    const text = document.getElementById('countdown-text');
-    const btn = document.getElementById('retry-btn');
-    let remaining = seconds;
-    const interval = setInterval(() => {
-      remaining--;
-      const m = Math.floor(remaining / 60);
-      const s = remaining % 60;
-      if (text) text.textContent = `Retry available in ${m}:${String(s).padStart(2, '0')}`;
-      if (remaining <= 0) {
-        clearInterval(interval);
-        if (text) text.textContent = 'Ready to retry!';
-        if (btn) { btn.disabled = false; btn.textContent = '← TRY AGAIN'; }
-      }
-    }, 1000);
-  }
-
-  function resetUI() {
-    sessionId = null;
-    if (pollInterval) clearInterval(pollInterval);
-    document.getElementById('topic-input').value = '';
-    hide('step-plan');
-    hide('step-progress');
-    hide('step-result');
-    hide('step-error');
-    show('step-input');
-  }
-
-  // Enter key support
-  document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('topic-input').addEventListener('keydown', e => {
-      if (e.key === 'Enter') planResearch();
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form,
     });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Incorrect username or password');
+    }
+
+    const data = await res.json();
+    setToken(data.access_token);
+    await loadUserAndShowAgent();
+
+  } catch (e) {
+    showAlert('login-alert', 'login-alert-msg', e.message);
+  } finally {
+    setLoading('login-btn', false, 'SIGN IN →');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   AUTH: REGISTER
+═══════════════════════════════════════════════════════ */
+function updatePwStrength(pw) {
+  let score = 0;
+  if (pw.length >= 8)           score++;
+  if (/[A-Z]/.test(pw))         score++;
+  if (/[0-9]/.test(pw))         score++;
+  if (/[^A-Za-z0-9]/.test(pw))  score++;
+
+  const classes = ['', 'weak', 'fair', 'fair', 'strong'];
+  for (let i = 1; i <= 4; i++) {
+    const bar = $(`pb${i}`);
+    bar.className = 'pw-bar';
+    if (i <= score) bar.classList.add(score <= 1 ? 'weak' : score <= 3 ? 'fair' : 'strong');
+  }
+}
+
+function validateEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+async function submitRegister() {
+  hideAlert('register-alert');
+  ['rg-username','rg-email','rg-password','rg-confirm'].forEach(clearFieldErr);
+
+  const username = $('rg-username').value.trim();
+  const email    = $('rg-email').value.trim();
+  const password = $('rg-password').value;
+  const confirm  = $('rg-confirm').value;
+
+  let valid = true;
+
+  if (!username || username.length < 3) {
+    setFieldErr('rg-username', 'At least 3 characters'); valid = false;
+  } else if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+    setFieldErr('rg-username', 'Letters, numbers, and underscores only'); valid = false;
+  }
+
+  if (!email || !validateEmail(email)) {
+    setFieldErr('rg-email', 'Enter a valid email address'); valid = false;
+  }
+
+  if (!password || password.length < 8) {
+    setFieldErr('rg-password', 'Minimum 8 characters'); valid = false;
+  }
+
+  if (password !== confirm) {
+    setFieldErr('rg-confirm', 'Passwords do not match'); valid = false;
+  }
+
+  if (!valid) return;
+
+  setLoading('register-btn', true);
+
+  try {
+    const res = await fetch('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email, password }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Registration failed');
+    }
+
+    const data = await res.json();
+    setToken(data.access_token);
+
+    // Flash success before transitioning
+    showAlert('register-alert', 'register-alert-msg', `Account created! Welcome, ${username}`, 'success');
+    $('register-alert').querySelector('.alert-icon').textContent = '✓';
+
+    setTimeout(async () => { await loadUserAndShowAgent(); }, 900);
+
+  } catch (e) {
+    $('register-alert').querySelector('.alert-icon').textContent = '⚠';
+    showAlert('register-alert', 'register-alert-msg', e.message, 'error');
+  } finally {
+    setLoading('register-btn', false, 'CREATE ACCOUNT →');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   AUTH: LOAD USER & SHOW AGENT
+═══════════════════════════════════════════════════════ */
+async function loadUserAndShowAgent() {
+  try {
+    const res = await fetch('/api/me', { headers: authHeaders() });
+    if (!res.ok) throw new Error('Unauthorized');
+    const user = await res.json();
+
+    // Update header
+    $('header-username').innerHTML = `<span>${user.username}</span>`;
+    show('header-username');
+    show('header-logout-btn');
+
+    // Switch views
+    hide('auth-view');
+    show('agent-view');
+  } catch {
+    clearToken();
+    showLogin();
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   AUTH: LOGOUT
+═══════════════════════════════════════════════════════ */
+function logout() {
+  clearToken();
+  sessionId = null;
+  if (pollInterval) clearInterval(pollInterval);
+
+  hide('header-username');
+  hide('header-logout-btn');
+  hide('agent-view');
+  show('auth-view');
+  showLogin();
+
+  // Reset agent UI
+  resetUI();
+  $('li-username').value = '';
+  $('li-password').value = '';
+}
+
+$('header-logout-btn').addEventListener('click', logout);
+
+/* ═══════════════════════════════════════════════════════
+   BOOT: CHECK EXISTING SESSION
+═══════════════════════════════════════════════════════ */
+window.addEventListener('DOMContentLoaded', async () => {
+  if (getToken()) {
+    await loadUserAndShowAgent();
+  }
+
+  // Enter key on login
+  $('li-password').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
+  $('li-username').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
+  $('rg-confirm').addEventListener('keydown', e => { if (e.key === 'Enter') submitRegister(); });
+
+  // Password visibility toggles
+  setupPwToggle('li-password', 'li-pw-toggle');
+  setupPwToggle('rg-password', 'rg-pw-toggle');
+
+  // Enter on topic input
+  $('topic-input').addEventListener('keydown', e => { if (e.key === 'Enter') planResearch(); });
+});
+
+function setupPwToggle(inputId, btnId) {
+  $(btnId).addEventListener('click', () => {
+    const inp = $(inputId);
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+    $(btnId).textContent = inp.type === 'password' ? '👁' : '🙈';
   });
+}
+
+/* ═══════════════════════════════════════════════════════
+   AGENT: RESEARCH PIPELINE
+═══════════════════════════════════════════════════════ */
+async function planResearch() {
+  const topic = $('topic-input').value.trim();
+  if (!topic) return;
+
+  const btn = $('plan-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-dark"></span>';
+
+  try {
+    const res = await fetch('/research/plan', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ topic }),
+    });
+
+    if (res.status === 401) { logout(); return; }
+    if (!res.ok) throw new Error(await res.text());
+
+    const data = await res.json();
+    sessionId = data.session_id;
+
+    approvedQueries = [...data.queries];
+    renderQueryList();
+    $('reasoning-box').textContent = data.reasoning;
+
+    hide('step-input');
+    show('step-plan');
+
+  } catch(e) {
+    showResearchError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'PLAN →';
+  }
+}
+
+function renderQueryList() {
+  const list = $('query-list');
+  list.innerHTML = approvedQueries.map((q, i) =>
+    `<div class="query-item">
+      <span class="query-num">${String(i+1).padStart(2,'0')}</span>
+      <span class="query-text">${q}</span>
+      <button class="query-remove" onclick="removeQuery(${i})" title="Remove">×</button>
+    </div>`
+  ).join('');
+  $('query-count').textContent = `${approvedQueries.length} queries`;
+}
+
+function removeQuery(idx) {
+  approvedQueries.splice(idx, 1);
+  renderQueryList();
+}
+
+function rejectPlan() {
+  sessionId = null;
+  approvedQueries = [];
+  hide('step-plan');
+  show('step-input');
+  $('topic-input').focus();
+}
+
+async function startResearch() {
+  hide('step-plan');
+  show('step-progress');
+
+  const topic = $('topic-input').value.trim();
+  $('progress-topic').textContent = topic;
+
+  const log = $('node-log');
+  log.innerHTML = NODES.map(n =>
+    `<div class="node-item" id="node-${n.key}">
+      <span class="node-icon">${n.icon}</span>
+      <span>${n.label}</span>
+    </div>`
+  ).join('');
+
+  try {
+    const res = await fetch('/research/start', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ session_id: sessionId, queries: approvedQueries }),
+    });
+    if (res.status === 401) { logout(); return; }
+    if (!res.ok) throw new Error(await res.text());
+
+    pollInterval = setInterval(pollStatus, 2000);
+
+  } catch(e) {
+    showResearchError(e.message);
+  }
+}
+
+async function pollStatus() {
+  try {
+    const res = await fetch(`/research/status/${sessionId}`, { headers: authHeaders() });
+    if (res.status === 401) { clearInterval(pollInterval); logout(); return; }
+    const data = await res.json();
+
+    $('progress-bar').style.width  = data.progress + '%';
+    $('progress-pct').textContent  = data.progress + '%';
+
+    const currentIdx = NODES.findIndex(n => n.key === data.current_node);
+    NODES.forEach((n, i) => {
+      const el = $(`node-${n.key}`);
+      if (!el) return;
+      el.classList.remove('active', 'done');
+      if (i < currentIdx)      el.classList.add('done');
+      else if (i === currentIdx) el.classList.add('active');
+    });
+
+    if (data.status === 'done') {
+      clearInterval(pollInterval);
+      hide('step-progress');
+      show('step-result');
+      $('result-sub').textContent = $('topic-input').value.trim();
+    }
+
+    if (data.status === 'error') {
+      clearInterval(pollInterval);
+      hide('step-progress');
+      showResearchError(data.error || 'Unknown error');
+    }
+
+  } catch(e) {
+    clearInterval(pollInterval);
+    showResearchError(e.message);
+  }
+}
+
+function viewPDF()     { window.open(`/research/result/${sessionId}`, '_blank'); }
+function downloadPDF() { window.location.href = `/research/download/${sessionId}`; }
+
+function showResearchError(msg) {
+  const el = $('step-error');
+  if (msg.includes('Not enough sources')) {
+    el.innerHTML = '⚠ <strong>Topic not found on the web.</strong><br/>'
+      + msg.split('(')[0].trim()
+      + '<br/><small>Try a well-known company, technology, event, or person.</small>'
+      + '<br/><br/><button class="btn-reject" onclick="resetUI()">← TRY AGAIN</button>';
+  } else if (msg.includes('rate limited') || msg.includes('try again in')) {
+    el.innerHTML = '⚠ <strong>API limit reached.</strong><br/>All inference keys are busy. Please wait a few minutes.'
+      + '<br/><br/><span id="countdown-text" style="font-family:var(--mono);color:var(--accent);font-size:13px;">Retry in 5:00</span>'
+      + '<br/><br/><button class="btn-reject" id="retry-btn" onclick="resetUI()" disabled>← TRY AGAIN</button>';
+    el.classList.remove('hidden');
+    startCountdown(300);
+    return;
+  } else {
+    el.innerHTML = '⚠ ' + msg
+      + '<br/><br/><button class="btn-reject" onclick="resetUI()">← TRY AGAIN</button>';
+  }
+  el.classList.remove('hidden');
+}
+
+function startCountdown(seconds) {
+  let remaining = seconds;
+  const interval = setInterval(() => {
+    remaining--;
+    const m = Math.floor(remaining / 60);
+    const s = remaining % 60;
+    const el = $('countdown-text');
+    const btn = $('retry-btn');
+    if (el) el.textContent = `Retry in ${m}:${String(s).padStart(2,'0')}`;
+    if (remaining <= 0) {
+      clearInterval(interval);
+      if (el)  el.textContent  = 'Ready to retry!';
+      if (btn) { btn.disabled = false; btn.textContent = '← TRY AGAIN'; }
+    }
+  }, 1000);
+}
+
+function resetUI() {
+  sessionId = null;
+  if (pollInterval) clearInterval(pollInterval);
+  $('topic-input').value = '';
+  hide('step-plan');
+  hide('step-progress');
+  hide('step-result');
+  hide('step-error');
+  show('step-input');
+}
 </script>
 </body>
 </html>
