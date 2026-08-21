@@ -4,6 +4,8 @@ from langchain_groq import ChatGroq
 from langchain_community.embeddings import FakeEmbeddings
 from dotenv import load_dotenv
 
+
+
 load_dotenv(dotenv_path=".env") or load_dotenv(dotenv_path="..env")
 
 CHROMA_PATH = "./vector_store"

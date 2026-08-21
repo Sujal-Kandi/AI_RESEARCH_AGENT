@@ -1,6 +1,182 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Research Agent</title>
+    <style>
+        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        body { background-color: #f4f6f8; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+        .card { background: white; padding: 2.5rem; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); width: 100%; max-width: 480px; }
+        h2 { margin-top: 0; color: #1a1d20; }
+        .form-group { margin-bottom: 1.2rem; }
+        label { display: block; margin-bottom: 0.4rem; font-weight: 600; font-size: 0.9rem; color: #495057; }
+        input[type="text"], input[type="password"], textarea {
+            width: 100%; padding: 0.75rem; border: 1px solid #ced4da; border-radius: 6px; font-size: 1rem;
+        }
+        button {
+            width: 100%; padding: 0.75rem; background-color: #2563eb; color: white; border: none;
+            border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s;
+        }
+        button:hover { background-color: #1d4ed8; }
+        .btn-logout { background-color: #dc2626; margin-top: 1rem; }
+        .btn-logout:hover { background-color: #b91c1c; }
+        .hidden { display: none; }
+        .error-msg { color: #dc2626; font-size: 0.85rem; margin-top: 0.5rem; }
+        .output-box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 1rem; border-radius: 6px; margin-top: 1rem; white-space: pre-wrap; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <!-- LOGIN SECTION -->
+        <div id="login-section">
+            <h2>🔑 Research Login</h2>
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" required placeholder="researcher">
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" required placeholder="password123">
+                </div>
+                <button type="submit">Sign In</button>
+                <div id="login-error" class="error-msg hidden"></div>
+            </form>
+        </div>
+
+        <!-- AGENT SECTION (HIDDEN UNTIL AUTHENTICATED) -->
+        <div id="agent-section" class="hidden">
+            <h2>🤖 AI Research Agent</h2>
+            <p id="user-greeting" style="color: #64748b; font-size: 0.9rem;"></p>
+            
+            <form id="research-form">
+                <div class="form-group">
+                    <label for="query">Research Prompt</label>
+                    <textarea id="query" rows="4" required placeholder="Ask your agent to research a topic..."></textarea>
+                </div>
+                <button type="submit" id="submit-btn">Run Research</button>
+            </form>
+
+            <div id="output" class="output-box hidden"></div>
+            <button id="logout-btn" class="btn-logout">Logout</button>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = "http://127.0.0.1:8000/api";
+
+        // Elements
+        const loginSection = document.getElementById('login-section');
+        const agentSection = document.getElementById('agent-section');
+        const loginForm = document.getElementById('login-form');
+        const researchForm = document.getElementById('research-form');
+        const loginError = document.getElementById('login-error');
+        const userGreeting = document.getElementById('user-greeting');
+        const outputBox = document.getElementById('output');
+        const logoutBtn = document.getElementById('logout-btn');
+
+        // Check if user is already logged in on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            const token = localStorage.getItem('access_token');
+            if (token) {
+                showAgentUI();
+            }
+        });
+
+        // 1. HANDLE LOGIN
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            loginError.classList.add('hidden');
+
+            // OAuth2 Form Data format required by FastAPI
+            const formData = new URLSearchParams();
+            formData.append('username', document.getElementById('username').value);
+            formData.append('password', document.getElementById('password').value);
+
+            try {
+                const response = await fetch(`${API_URL}/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    throw new Error('Invalid username or password');
+                }
+
+                const data = await response.json();
+                
+                // SAVE TOKEN TO LOCALSTORAGE
+                localStorage.setItem('access_token', data.access_token);
+                showAgentUI();
+            } catch (err) {
+                loginError.textContent = err.message;
+                loginError.classList.remove('hidden');
+            }
+        });
+
+        // 2. HANDLE PROTECTED RESEARCH API CALL
+        researchForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const query = document.getElementById('query').value;
+            const token = localStorage.getItem('access_token');
+
+            outputBox.classList.remove('hidden');
+            outputBox.textContent = "⏳ Running agent research...";
+
+            try {
+                // SEND AUTHORIZATION HEADER WITH BEARER TOKEN
+                const response = await fetch(`${API_URL}/research?query=${encodeURIComponent(query)}`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (response.status === 401) {
+                    // Token expired or invalid
+                    alert("Session expired. Please log in again.");
+                    logout();
+                    return;
+                }
+
+                const data = await response.json();
+                outputBox.textContent = JSON.stringify(data, null, 2);
+            } catch (err) {
+                outputBox.textContent = "Error running research query: " + err.message;
+            }
+        });
+
+        // 3. UI TOGGLES & LOGOUT
+        function showAgentUI() {
+            loginSection.classList.add('hidden');
+            agentSection.classList.remove('hidden');
+            userGreeting.textContent = "Authenticated & ready for research.";
+        }
+
+        function logout() {
+            localStorage.removeItem('access_token');
+            agentSection.classList.add('hidden');
+            loginSection.classList.remove('hidden');
+            outputBox.classList.add('hidden');
+            loginForm.reset();
+        }
+
+        logoutBtn.addEventListener('click', logout);
+    </script>
+</body>
+</html>
+
+
+
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Research Agent</title>

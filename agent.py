@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, field_validator
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
+
+
 from langchain_groq import ChatGroq
 from langchain_together import ChatTogether
 from langchain_tavily import TavilySearch
@@ -16,7 +18,6 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from rag import query_memory, save_to_memory
-
 
 
 load_dotenv(dotenv_path="/etc/secrets/.env", override=False)
@@ -43,6 +44,8 @@ def get_web_search():
 
 def make_llm(key: str):
     return ChatGroq(model="llama-3.3-70b-versatile", api_key=key, temperature=0.2)
+
+
 
 # ── CUSTOM EXCEPTIONS ─────────────────────────────────────────────────────────
 class RateLimitExhausted(Exception):

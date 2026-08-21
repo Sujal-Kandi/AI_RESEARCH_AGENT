@@ -10,7 +10,49 @@ from pydantic import BaseModel
 from typing import Optional
 import uvicorn
 
+from fastapi import APIRouter, Depends ,  status
+from fastapi.security import OAuth2PasswordRequestForm
+from auth import FAKE_USERS_DB, verify_password, create_access_token, get_current_user
+from schemas import Token, UserData
+
+
 app = FastAPI(title="AI Research Agent")
+
+
+router = APIRouter(prefix="/api")
+
+@router.post("/login", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = FAKE_USERS_DB.get(form_data.username)
+    if not user or not verify_password(form_data.password , user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password"
+        )
+    
+    token = create_access_token(data={"sub" : user["username"] , "tenant_id": user["tenant_id"]})
+    {"access_token" : token , "token_type": "bearer"}
+
+@router.post("/research")
+async def execute_research(
+    query: str,
+    current_user: UserData = Depends(get_current_user)
+):
+
+
+    return {
+        "status": "success",
+        "user": current_user.username,
+        "query": query,
+        "result": f"Executed research query for tenant: {current_user.tenant_id}"
+    }
+
+
+
+
+# app = FastAPI(title="AI Research Agent")
+
+
 
 @app.on_event("startup")
 async def startup_check():
@@ -45,7 +87,7 @@ class StartRequest(BaseModel):
     session_id: str
     queries: list = []  # optional override — user can remove queries before starting
 
-# ── STEP 1: PLAN ──────────────────────────────────────────────────────────────
+# ── STEP 1: PLAN 
 @app.post("/research/plan")
 def plan_research(req: PlanRequest):
     """Run strategist node, return queries for user approval."""
@@ -95,7 +137,7 @@ def plan_research(req: PlanRequest):
         "reasoning": plan.reasoning,
     }
 
-# ── STEP 2: START ─────────────────────────────────────────────────────────────
+# ── STEP 2: START 
 @app.post("/research/start")
 def start_research(req: StartRequest):
     """User approved the plan — kick off the full pipeline in background."""
@@ -273,3 +315,5 @@ def serve_ui():
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
+
+
