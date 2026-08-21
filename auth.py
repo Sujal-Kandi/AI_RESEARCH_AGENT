@@ -11,7 +11,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
 
-pwd_context = CryptContext(schemas=['bcrypt'] , deprecated='auto')
+pwd_context = CryptContext(schemes=['bcrypt'] , deprecated='auto')
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
 
 FAKE_USERS_DB = {
