@@ -10,8 +10,17 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-fallback-secret-key-for-local-dev
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
+import bcrypt
+# Workaround for passlib + bcrypt version bug
+if not hasattr(bcrypt, "__about__"):
+    class BcryptAbout:
+        __version__ = getattr(bcrypt, "__version__", "4.0.1")
+    bcrypt.__about__ = BcryptAbout()
+
+from passlib.context import CryptContext
 
 pwd_context = CryptContext(schemes=['bcrypt'] , deprecated='auto')
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
 
 FAKE_USERS_DB = {

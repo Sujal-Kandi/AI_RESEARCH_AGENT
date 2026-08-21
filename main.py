@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from app.api import router as api_router
+from api import router as api_router
 
 app = FastAPI(title="AI Research Agent API")
 
