@@ -2,7 +2,10 @@ import io
 import os
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
@@ -13,7 +16,24 @@ from auth import create_access_token, create_user, get_current_user, get_user_by
 from schemas import Token, UserData, UserLogin, UserRegister
 
 # ── App & Router ───────────────────────────────────────────────────────────────
-app = FastAPI(title="AI Research Agent")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load secrets from Render secret file first, then fall back to local .env
+    load_dotenv(dotenv_path="/etc/secrets/.env", override=False)
+    load_dotenv(dotenv_path=".env", override=False)
+
+    keys = {
+        "TAVILY_API_KEY":   bool(os.getenv("TAVILY_API_KEY")),
+        "GROQ_API_KEY":     bool(os.getenv("GROQ_API_KEY")),
+        "GROQ_API_KEY_2":   bool(os.getenv("GROQ_API_KEY_2")),
+        "TOGETHER_API_KEY": bool(os.getenv("TOGETHER_API_KEY")),
+    }
+    print(f"[STARTUP] Environment keys loaded: {keys}")
+    yield
+
+app = FastAPI(title="AI Research Agent", lifespan=lifespan)
 router = APIRouter(prefix="/api")
 
 
@@ -64,15 +84,7 @@ app.include_router(router)
 
 
 # ── Startup check ─────────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup_check():
-    keys = {
-        "TAVILY_API_KEY":   bool(os.getenv("TAVILY_API_KEY")),
-        "GROQ_API_KEY":     bool(os.getenv("GROQ_API_KEY")),
-        "GROQ_API_KEY_2":   bool(os.getenv("GROQ_API_KEY_2")),
-        "TOGETHER_API_KEY": bool(os.getenv("TOGETHER_API_KEY")),
-    }
-    print(f"[STARTUP] Environment keys loaded: {keys}")
+
 
 
 # ── SESSION STORE ──────────────────────────────────────────────────────────────
