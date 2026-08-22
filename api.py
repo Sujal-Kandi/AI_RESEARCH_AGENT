@@ -7,11 +7,10 @@ from pathlib import Path
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 
-from auth import create_access_token, create_user, get_current_user, get_user_by_username, verify_password
-from schemas import Token, UserData, UserRegister
+from auth import create_access_token, create_user, get_current_user, get_user_by_email, verify_password
+from schemas import Token, UserData, UserLogin, UserRegister
 
 # ── App & Router ───────────────────────────────────────────────────────────────
 app = FastAPI(title="AI Research Agent")
@@ -37,13 +36,13 @@ async def register(body: UserRegister):
 
 
 @router.post("/login", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    """Authenticate with username + password and return a JWT."""
-    user = get_user_by_username(form_data.username)
-    if not user or not verify_password(form_data.password, user["hashed_pw"]):
+async def login(body: UserLogin):
+    """Authenticate with email + password and return a JWT."""
+    user = get_user_by_email(body.email)
+    if not user or not verify_password(body.password, user["hashed_pw"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     token = create_access_token(data={

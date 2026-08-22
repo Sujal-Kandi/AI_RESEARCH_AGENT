@@ -487,9 +487,9 @@
         </div>
 
         <div class="field">
-          <label for="li-user">Username</label>
-          <input type="text" id="li-user" placeholder="your_username" autocomplete="username" />
-          <span class="field-err" id="li-user-err"></span>
+          <label for="li-email">Email address</label>
+          <input type="text" id="li-email" placeholder="you@example.com" autocomplete="email" />
+          <span class="field-err" id="li-email-err"></span>
         </div>
 
         <div class="field">
@@ -708,7 +708,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // enter keys
   $('li-pw').addEventListener('keydown',      e => e.key==='Enter' && submitLogin());
-  $('li-user').addEventListener('keydown',    e => e.key==='Enter' && submitLogin());
+  $('li-email').addEventListener('keydown',   e => e.key==='Enter' && submitLogin());
   $('rg-confirm').addEventListener('keydown', e => e.key==='Enter' && submitRegister());
   $('topic-input').addEventListener('keydown',e => e.key==='Enter' && planResearch());
 
@@ -730,29 +730,25 @@ function pwEye(inputId, btnId) {
 ══════════════════════════════════════════ */
 async function submitLogin() {
   hide('login-alert');
-  clrErr('li-user'); clrErr('li-pw');
+  clrErr('li-email'); clrErr('li-pw');
 
-  const username = $('li-user').value.trim();
+  const email    = $('li-email').value.trim();
   const password = $('li-pw').value;
 
-  if (!username) { setErr('li-user', 'Username is required'); return; }
-  if (!password) { setErr('li-pw',   'Password is required'); return; }
+  if (!email)    { setErr('li-email', 'Email is required'); return; }
+  if (!password) { setErr('li-pw',    'Password is required'); return; }
 
   setBtn('login-btn', true);
   try {
-    const form = new URLSearchParams();
-    form.append('username', username);
-    form.append('password', password);
-
     const res = await fetch('/api/login', {
       method:  'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body:    form,
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ email, password }),
     });
 
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
-      throw new Error(e.detail || 'Incorrect username or password');
+      throw new Error(e.detail || 'Incorrect email or password');
     }
 
     const data = await res.json();
@@ -849,8 +845,8 @@ function logout() {
   hide('hdr-user');
   hide('hdr-logout');
   resetAgent();
-  $('li-user').value = '';
-  $('li-pw').value   = '';
+  $('li-email').value = '';
+  $('li-pw').value    = '';
   goTo('page-login');
 }
 
