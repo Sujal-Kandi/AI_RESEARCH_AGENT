@@ -43,7 +43,7 @@ def get_web_search():
     )
 
 def make_llm(key: str):
-    return ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", api_key=key, temperature=0.2)
+    return ChatGroq(model="openai/gpt-oss-120b", api_key=key, temperature=0.2)
 
 
 
@@ -76,9 +76,9 @@ def make_together_llm():
     together_key = os.getenv("TOGETHER_API_KEY")
     if not together_key:
         raise RuntimeError("No TOGETHER_API_KEY found in .env")
-    print("  [FALLBACK] Switching to Together.ai (Llama-4-Scout)")
+    print("  [FALLBACK] Switching to Together.ai (Llama-3.3-70B-Instruct)")
     return ChatTogether(
-        model="meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        model="meta-llama/Llama-3.3-70B-Instruct",
         together_api_key=together_key,
         temperature=0.2,
     )
