@@ -107,7 +107,13 @@ def plan_research(
     current_user: UserData = Depends(get_current_user),
 ):
     """Run strategist node, return queries for user approval."""
-    from agent import AgentState, strategist_node
+    import traceback
+    try:
+        from agent import AgentState, strategist_node
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[IMPORT ERROR] agent.py failed to import:\n{tb}")
+        raise HTTPException(status_code=500, detail=f"Agent import failed: {str(e)}")
 
     session_id = str(uuid.uuid4())
     sessions[session_id] = {
