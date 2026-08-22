@@ -10,25 +10,23 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:             #0a0a0a;
-    --surface:        #111111;
-    --surface-2:      #161616;
-    --border:         #1e1e1e;
-    --border-bright:  #2a2a2a;
-    --text:           #e8e8e8;
-    --muted:          #555;
-    --muted-2:        #888;
-    --accent:         #c8ff00;
-    --accent-dim:     rgba(200,255,0,0.07);
-    --accent-border:  rgba(200,255,0,0.18);
-    --red:            #ff4444;
-    --red-dim:        rgba(255,68,68,0.08);
-    --red-border:     rgba(255,68,68,0.2);
-    --green:          #22c55e;
-    --mono:           'JetBrains Mono', monospace;
-    --sans:           'Inter', sans-serif;
-    --radius:         10px;
-    --radius-lg:      14px;
+    --bg:            #0a0a0a;
+    --surface:       #111111;
+    --border:        #1e1e1e;
+    --border-hi:     #2a2a2a;
+    --text:          #e8e8e8;
+    --muted:         #555;
+    --muted2:        #888;
+    --accent:        #c8ff00;
+    --accent-dim:    rgba(200,255,0,0.07);
+    --accent-border: rgba(200,255,0,0.18);
+    --red:           #ff4444;
+    --red-dim:       rgba(255,68,68,0.08);
+    --red-border:    rgba(255,68,68,0.2);
+    --mono:          'JetBrains Mono', monospace;
+    --sans:          'Inter', sans-serif;
+    --r:             10px;
+    --rl:            14px;
   }
 
   html, body {
@@ -41,26 +39,26 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  /* ═══════════════════════════════════════════════════
-     SHARED LAYOUT
-  ═══════════════════════════════════════════════════ */
+  /* ── LAYOUT ── */
   .shell {
     min-height: 100vh;
-    display: grid;
-    grid-template-rows: 56px 1fr;
+    display: flex;
+    flex-direction: column;
   }
 
   header {
+    height: 56px;
     border-bottom: 1px solid var(--border);
     padding: 0 40px;
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     position: sticky;
     top: 0;
     background: rgba(10,10,10,0.92);
     backdrop-filter: blur(12px);
     z-index: 100;
+    flex-shrink: 0;
   }
 
   .logo-dot {
@@ -69,298 +67,276 @@
     background: var(--accent);
     box-shadow: 0 0 8px var(--accent);
     animation: pulse 2s ease-in-out infinite;
-    flex-shrink: 0;
   }
-
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
   .logo-text {
     font-family: var(--mono);
     font-size: 12px;
     font-weight: 500;
-    letter-spacing: 0.1em;
-    color: var(--text);
+    letter-spacing: .1em;
   }
 
   .header-right {
     margin-left: auto;
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 14px;
   }
 
   .header-user {
     font-family: var(--mono);
     font-size: 11px;
-    color: var(--muted);
-    letter-spacing: 0.05em;
+    color: var(--muted2);
+    letter-spacing: .05em;
   }
+  .header-user span { color: var(--accent); }
 
-  .header-user span {
-    color: var(--accent);
-  }
-
-  .btn-header-logout {
+  .btn-signout {
     font-family: var(--mono);
     font-size: 11px;
-    letter-spacing: 0.05em;
+    letter-spacing: .05em;
     background: transparent;
-    border: 1px solid var(--border-bright);
-    color: var(--muted);
+    border: 1px solid var(--border-hi);
+    color: var(--muted2);
     padding: 5px 12px;
     border-radius: 6px;
     cursor: pointer;
-    transition: all 0.15s;
+    transition: all .15s;
   }
-  .btn-header-logout:hover { border-color: var(--red); color: var(--red); }
+  .btn-signout:hover { border-color: var(--red); color: var(--red); }
 
   main {
+    flex: 1;
     display: flex;
     align-items: flex-start;
     justify-content: center;
     padding: 60px 20px 80px;
   }
 
-  /* ═══════════════════════════════════════════════════
-     AUTH PAGES WRAPPER
-  ═══════════════════════════════════════════════════ */
-  .auth-wrapper {
+  .hidden { display: none !important; }
+
+  /* ════════════════════════════
+     AUTH — shared
+  ════════════════════════════ */
+  .auth-page {
     width: 100%;
     max-width: 420px;
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: 28px;
   }
 
-  .auth-logo-block {
+  .auth-top {
     text-align: center;
   }
 
-  .auth-logo-block .brand {
+  .brand {
     display: inline-flex;
     align-items: center;
-    gap: 10px;
-    margin-bottom: 32px;
+    gap: 8px;
+    margin-bottom: 28px;
   }
-
-  .auth-logo-block .brand-dot {
-    width: 10px; height: 10px;
+  .brand-dot {
+    width: 9px; height: 9px;
     border-radius: 50%;
     background: var(--accent);
-    box-shadow: 0 0 10px var(--accent);
+    box-shadow: 0 0 8px var(--accent);
     animation: pulse 2s ease-in-out infinite;
   }
-
-  .auth-logo-block .brand-name {
+  .brand-name {
     font-family: var(--mono);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
-    letter-spacing: 0.12em;
-    color: var(--text);
+    letter-spacing: .12em;
   }
 
   .auth-heading {
     font-size: 26px;
     font-weight: 700;
-    letter-spacing: -0.03em;
+    letter-spacing: -.03em;
     color: #fff;
     line-height: 1.2;
     margin-bottom: 6px;
   }
-
   .auth-sub {
     font-size: 13px;
-    color: var(--muted-2);
+    color: var(--muted2);
   }
 
-  /* ── Auth Card ── */
+  /* ── card ── */
   .auth-card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border-radius: var(--rl);
     padding: 32px;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 18px;
   }
 
-  /* ── Form fields ── */
-  .field { display: flex; flex-direction: column; gap: 7px; }
-
+  /* ── field ── */
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
   .field label {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.05em;
-    color: var(--muted-2);
+    letter-spacing: .07em;
+    color: var(--muted2);
     text-transform: uppercase;
   }
-
-  .input-wrap {
-    position: relative;
-    display: flex;
-    align-items: center;
-  }
-
-  .input-icon {
-    position: absolute;
-    left: 13px;
-    color: var(--muted);
-    font-size: 15px;
-    pointer-events: none;
-    line-height: 1;
-  }
-
   .field input {
     width: 100%;
     background: var(--bg);
-    border: 1px solid var(--border-bright);
-    border-radius: var(--radius);
-    padding: 11px 14px 11px 44px;
+    border: 1px solid var(--border-hi);
+    border-radius: var(--r);
+    padding: 11px 14px;
     font-family: var(--sans);
     font-size: 14px;
     color: var(--text);
     outline: none;
-    transition: border-color 0.2s, box-shadow 0.2s;
+    transition: border-color .2s, box-shadow .2s;
   }
-
   .field input::placeholder { color: var(--muted); }
-
   .field input:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-dim);
   }
-
   .field input.err {
     border-color: var(--red);
     box-shadow: 0 0 0 3px var(--red-dim);
   }
 
-  .field-error {
-    font-size: 12px;
-    color: var(--red);
-    min-height: 16px;
+  /* password wrap — only used for pw fields that need the eye toggle */
+  .pw-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
   }
-
-  /* ── Password toggle ── */
-  .pw-toggle {
+  .pw-wrap input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border-hi);
+    border-radius: var(--r);
+    padding: 11px 40px 11px 14px;
+    font-family: var(--sans);
+    font-size: 14px;
+    color: var(--text);
+    outline: none;
+    transition: border-color .2s, box-shadow .2s;
+  }
+  .pw-wrap input::placeholder { color: var(--muted); }
+  .pw-wrap input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+  }
+  .pw-wrap input.err {
+    border-color: var(--red);
+    box-shadow: 0 0 0 3px var(--red-dim);
+  }
+  .pw-eye {
     position: absolute;
-    right: 12px;
+    right: 11px;
     background: none;
     border: none;
-    color: var(--muted);
+    color: var(--muted2);
     cursor: pointer;
-    padding: 4px;
     font-size: 15px;
-    transition: color 0.15s;
     line-height: 1;
+    padding: 2px;
+    transition: color .15s;
   }
-  .pw-toggle:hover { color: var(--text); }
+  .pw-eye:hover { color: var(--text); }
 
-  /* ── Password strength bar ── */
-  .pw-strength { display: flex; gap: 4px; margin-top: 4px; }
+  .field-err {
+    font-size: 12px;
+    color: var(--red);
+    min-height: 15px;
+  }
+
+  /* pw strength */
+  .pw-bars { display: flex; gap: 4px; margin-top: 5px; }
   .pw-bar {
     flex: 1; height: 3px; border-radius: 2px;
-    background: var(--border-bright);
-    transition: background 0.3s;
+    background: var(--border-hi);
+    transition: background .3s;
   }
   .pw-bar.weak   { background: var(--red); }
   .pw-bar.fair   { background: #f59e0b; }
   .pw-bar.strong { background: var(--accent); }
 
-  /* ── Divider ── */
-  .divider {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    color: var(--muted);
-    font-size: 12px;
-  }
-  .divider::before, .divider::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: var(--border);
-  }
-
-  /* ── Buttons ── */
-  .btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 12px 20px;
-    border-radius: var(--radius);
-    border: none;
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: 0.07em;
-    cursor: pointer;
-    transition: all 0.15s;
-    white-space: nowrap;
-    width: 100%;
-    position: relative;
-  }
-
-  .btn-primary {
-    background: var(--accent);
-    color: #000;
-    font-weight: 600;
-  }
-  .btn-primary:hover:not(:disabled) { background: #d4ff1a; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(200,255,0,0.2); }
-  .btn-primary:active:not(:disabled) { transform: translateY(0); }
-  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
-
-  .btn-ghost {
-    background: transparent;
-    color: var(--muted-2);
-    border: 1px solid var(--border-bright);
-  }
-  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
-
-  /* ── Alert banner ── */
+  /* ── alert ── */
   .alert {
     display: flex;
     align-items: flex-start;
     gap: 10px;
-    padding: 12px 14px;
-    border-radius: var(--radius);
+    padding: 11px 14px;
+    border-radius: var(--r);
     font-size: 13px;
     line-height: 1.5;
   }
-  .alert-error  { background: var(--red-dim); border: 1px solid var(--red-border); color: #ff8080; }
-  .alert-success { background: rgba(34,197,94,0.07); border: 1px solid rgba(34,197,94,0.2); color: #4ade80; }
-  .alert-icon { flex-shrink: 0; margin-top: 1px; }
+  .alert-err  { background: var(--red-dim);             border: 1px solid var(--red-border);    color: #ff8080; }
+  .alert-ok   { background: rgba(34,197,94,.07);        border: 1px solid rgba(34,197,94,.2);   color: #4ade80; }
+  .alert-icon { flex-shrink: 0; }
 
-  /* ── Switch link ── */
+  /* ── primary button ── */
+  .btn-primary {
+    width: 100%;
+    padding: 13px;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: var(--r);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .07em;
+    cursor: pointer;
+    transition: background .15s, transform .1s, box-shadow .15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: #d4ff1a;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(200,255,0,.2);
+  }
+  .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* ── switch link ── */
   .auth-switch {
     text-align: center;
     font-size: 13px;
-    color: var(--muted-2);
+    color: var(--muted2);
   }
   .auth-switch a {
     color: var(--accent);
-    text-decoration: none;
     font-weight: 500;
     cursor: pointer;
+    text-decoration: none;
   }
   .auth-switch a:hover { text-decoration: underline; }
 
-  /* ── Spinner ── */
-  .spinner {
+  /* spinner */
+  .spin {
     width: 14px; height: 14px;
-    border: 2px solid rgba(0,0,0,0.3);
+    border: 2px solid rgba(0,0,0,.25);
     border-top-color: #000;
     border-radius: 50%;
-    animation: spin 0.65s linear infinite;
+    animation: rotate .6s linear infinite;
     display: inline-block;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes rotate { to { transform: rotate(360deg); } }
 
-  /* ═══════════════════════════════════════════════════
+  /* ════════════════════════════
      AGENT UI
-  ═══════════════════════════════════════════════════ */
-  .agent-wrapper {
+  ════════════════════════════ */
+  .agent-page {
     width: 100%;
     max-width: 720px;
     display: flex;
@@ -371,7 +347,7 @@
   .hero h1 {
     font-size: 32px;
     font-weight: 700;
-    letter-spacing: -0.03em;
+    letter-spacing: -.03em;
     line-height: 1.15;
     color: #fff;
   }
@@ -384,372 +360,237 @@
     line-height: 1.7;
   }
 
-  /* ── Cards ── */
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border-radius: var(--rl);
     padding: 24px;
   }
 
   .input-row { display: flex; gap: 10px; }
 
-  input[type="text"] {
+  .topic-input {
     flex: 1;
     background: var(--bg);
-    border: 1px solid var(--border-bright);
-    border-radius: var(--radius);
+    border: 1px solid var(--border-hi);
+    border-radius: var(--r);
     padding: 12px 16px;
     font-family: var(--sans);
     font-size: 14px;
     color: var(--text);
     outline: none;
-    transition: border-color 0.2s;
+    transition: border-color .2s;
   }
-  input[type="text"]::placeholder { color: var(--muted); }
-  input[type="text"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+  .topic-input::placeholder { color: var(--muted); }
+  .topic-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
 
   .btn-plan {
     padding: 12px 20px;
-    border-radius: var(--radius);
+    border-radius: var(--r);
     border: none;
     font-family: var(--mono);
     font-size: 12px;
-    font-weight: 500;
-    letter-spacing: 0.05em;
+    font-weight: 600;
+    letter-spacing: .05em;
     cursor: pointer;
-    transition: all 0.15s;
-    white-space: nowrap;
     background: var(--accent);
     color: #000;
+    transition: background .15s;
+    white-space: nowrap;
   }
   .btn-plan:hover { background: #d4ff1a; }
-  .btn-plan:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-plan:disabled { opacity: .4; cursor: not-allowed; }
 
-  .btn-approve {
-    width: 100%;
-    padding: 14px;
-    background: var(--accent);
-    color: #000;
-    border: none;
-    border-radius: var(--radius);
-    font-family: var(--mono);
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    cursor: pointer;
-    transition: all 0.15s;
-    margin-top: 20px;
-  }
+  .plan-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .plan-label { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--muted); text-transform: uppercase; }
+  .query-count { font-family: var(--mono); font-size: 11px; color: var(--accent); background: var(--accent-dim); border: 1px solid var(--accent-border); padding: 2px 8px; border-radius: 4px; }
+
+  .query-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+  .query-list::-webkit-scrollbar { width: 4px; }
+  .query-list::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: 2px; }
+
+  .query-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; color: #ccc; }
+  .query-item:hover { border-color: var(--border-hi); }
+  .query-item:hover .qremove { opacity: 1; }
+  .qnum { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 20px; padding-top: 1px; }
+  .qtext { flex: 1; }
+  .qremove { opacity: 0; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; transition: color .15s, opacity .15s; }
+  .qremove:hover { color: var(--red); }
+
+  .reasoning-box { margin-top: 14px; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+  .btn-approve { width: 100%; padding: 14px; background: var(--accent); color: #000; border: none; border-radius: var(--r); font-family: var(--mono); font-size: 13px; font-weight: 700; letter-spacing: .05em; cursor: pointer; transition: background .15s; margin-top: 20px; }
   .btn-approve:hover { background: #d4ff1a; }
 
-  .btn-reject {
-    width: 100%;
-    padding: 12px;
-    background: transparent;
-    color: var(--muted-2);
-    border: 1px solid var(--border-bright);
-    border-radius: var(--radius);
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: 0.05em;
-    cursor: pointer;
-    transition: all 0.15s;
-    margin-top: 8px;
-  }
-  .btn-reject:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-ghost { width: 100%; padding: 12px; background: transparent; color: var(--muted2); border: 1px solid var(--border-hi); border-radius: var(--r); font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: .05em; cursor: pointer; transition: all .15s; margin-top: 8px; }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
 
-  /* ── Plan ── */
-  .plan-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 16px;
-  }
-  .plan-label {
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    color: var(--muted);
-    text-transform: uppercase;
-  }
-  .query-count {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--accent);
-    background: var(--accent-dim);
-    border: 1px solid var(--accent-border);
-    padding: 2px 8px;
-    border-radius: 4px;
-  }
-  .query-list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    max-height: 320px;
-    overflow-y: auto;
-  }
-  .query-list::-webkit-scrollbar { width: 4px; }
-  .query-list::-webkit-scrollbar-track { background: transparent; }
-  .query-list::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
-  .query-item {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 10px 12px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 13px;
-    color: #ccc;
-    transition: border-color 0.15s;
-  }
-  .query-item:hover { border-color: var(--border-bright); }
-  .query-item:hover .query-remove { opacity: 1; }
-  .query-num { font-family: var(--mono); font-size: 11px; color: var(--muted); min-width: 20px; padding-top: 1px; }
-  .query-text { flex: 1; }
-  .query-remove {
-    opacity: 0;
-    background: none;
-    border: none;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 16px;
-    line-height: 1;
-    padding: 0 2px;
-    transition: color 0.15s, opacity 0.15s;
-    flex-shrink: 0;
-  }
-  .query-remove:hover { color: var(--red); }
-  .reasoning-box {
-    margin-top: 14px;
-    padding: 12px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 12px;
-    color: var(--muted);
-    line-height: 1.6;
-  }
-
-  /* ── Progress ── */
   .progress-section { display: flex; flex-direction: column; gap: 16px; }
   .progress-header { display: flex; align-items: center; justify-content: space-between; }
   .progress-topic { font-size: 13px; color: var(--muted); }
   .progress-pct { font-family: var(--mono); font-size: 13px; color: var(--accent); }
-  .progress-bar-wrap { height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }
-  .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 1px; transition: width 0.6s ease; box-shadow: 0 0 8px var(--accent); }
-  .node-log { display: flex; flex-direction: column; gap: 4px; }
-  .node-item {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 12px; border-radius: 6px;
-    font-family: var(--mono); font-size: 12px; color: var(--muted);
-    transition: all 0.2s;
-  }
-  .node-item.active { background: var(--accent-dim); border: 1px solid var(--accent-border); color: var(--accent); }
-  .node-item.done   { color: #444; }
-  .node-icon { font-size: 14px; width: 18px; text-align: center; }
+  .progress-track { height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 1px; transition: width .6s ease; box-shadow: 0 0 8px var(--accent); }
 
-  /* ── Result ── */
-  .result-card {
-    background: var(--surface);
-    border: 1px solid var(--accent-border);
-    border-radius: var(--radius-lg);
-    padding: 36px;
-    text-align: center;
-  }
+  .node-log { display: flex; flex-direction: column; gap: 4px; }
+  .node-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; font-family: var(--mono); font-size: 12px; color: var(--muted); transition: all .2s; }
+  .node-item.active { background: var(--accent-dim); border: 1px solid var(--accent-border); color: var(--accent); }
+  .node-item.done { color: #333; }
+  .node-icon { width: 18px; text-align: center; }
+
+  .result-card { background: var(--surface); border: 1px solid var(--accent-border); border-radius: var(--rl); padding: 36px; text-align: center; }
   .result-title { font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 6px; }
   .result-sub { font-size: 13px; color: var(--muted); margin-bottom: 28px; }
   .result-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
-  .btn-view { background: var(--accent); color: #000; padding: 12px 28px; border: none; border-radius: var(--radius); font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: 0.05em; cursor: pointer; transition: background 0.15s; }
+  .btn-view { background: var(--accent); color: #000; padding: 12px 28px; border: none; border-radius: var(--r); font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .05em; cursor: pointer; }
   .btn-view:hover { background: #d4ff1a; }
-  .btn-dl { background: transparent; color: var(--text); border: 1px solid var(--border-bright); padding: 12px 28px; border-radius: var(--radius); font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.05em; cursor: pointer; transition: all 0.15s; }
+  .btn-dl { background: transparent; color: var(--text); border: 1px solid var(--border-hi); padding: 12px 28px; border-radius: var(--r); font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: .05em; cursor: pointer; transition: all .15s; }
   .btn-dl:hover { border-color: var(--accent); color: var(--accent); }
-  .btn-new { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 11px 28px; border-radius: var(--radius); font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.05em; cursor: pointer; transition: all 0.15s; margin-top: 12px; }
-  .btn-new:hover { color: var(--text); border-color: var(--border-bright); }
+  .btn-new { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 11px 28px; border-radius: var(--r); font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: .05em; cursor: pointer; transition: all .15s; margin-top: 12px; }
+  .btn-new:hover { color: var(--text); border-color: var(--border-hi); }
 
-  /* ── Error box ── */
-  .error-box {
-    padding: 14px 16px;
-    background: var(--red-dim);
-    border: 1px solid var(--red-border);
-    border-radius: var(--radius);
-    font-family: var(--mono);
-    font-size: 12px;
-    color: var(--red);
-  }
+  .error-box { padding: 14px 16px; background: var(--red-dim); border: 1px solid var(--red-border); border-radius: var(--r); font-family: var(--mono); font-size: 12px; color: var(--red); }
 
-  /* ── Spinner (small dark) ── */
-  .spinner-dark {
-    width: 14px; height: 14px;
-    border: 2px solid rgba(0,0,0,0.25);
-    border-top-color: #000;
-    border-radius: 50%;
-    animation: spin 0.65s linear infinite;
-    display: inline-block;
-  }
-
-  /* ── Utility ── */
-  .hidden { display: none !important; }
+  .spin-dark { width: 14px; height: 14px; border: 2px solid rgba(0,0,0,.2); border-top-color: #000; border-radius: 50%; animation: rotate .6s linear infinite; display: inline-block; }
 </style>
 </head>
 <body>
 <div class="shell">
 
-  <!-- ══════════ HEADER ══════════ -->
+  <!-- HEADER -->
   <header>
     <div class="logo-dot"></div>
     <span class="logo-text">RESEARCH_AGENT</span>
-    <div class="header-right" id="header-right">
-      <span class="header-user hidden" id="header-username"></span>
-      <button class="btn-header-logout hidden" id="header-logout-btn">SIGN OUT</button>
+    <div class="header-right">
+      <span class="header-user hidden" id="hdr-user"></span>
+      <button class="btn-signout hidden" id="hdr-logout">SIGN OUT</button>
     </div>
   </header>
 
-  <!-- ══════════ MAIN ══════════ -->
   <main>
 
-    <!-- ─────────── AUTH PAGES ─────────── -->
-    <div class="auth-wrapper" id="auth-view">
-
-      <div class="auth-logo-block">
+    <!-- ══════════ LOGIN PAGE ══════════ -->
+    <div class="auth-page" id="page-login">
+      <div class="auth-top">
         <div class="brand">
           <div class="brand-dot"></div>
           <span class="brand-name">RESEARCH_AGENT</span>
         </div>
-
-        <!-- Login heading (default visible) -->
-        <div id="heading-login">
-          <div class="auth-heading">Welcome back</div>
-          <div class="auth-sub">Sign in to your account to continue</div>
-        </div>
-        <!-- Register heading (hidden) -->
-        <div id="heading-register" class="hidden">
-          <div class="auth-heading">Create an account</div>
-          <div class="auth-sub">Start your first deep research session</div>
-        </div>
+        <div class="auth-heading">Welcome back</div>
+        <div class="auth-sub">Sign in to your account to continue</div>
       </div>
 
-      <!-- ── LOGIN FORM ── -->
-      <div class="auth-card" id="login-card">
-        <div id="login-alert" class="alert alert-error hidden">
+      <div class="auth-card">
+        <div id="login-alert" class="alert alert-err hidden">
           <span class="alert-icon">⚠</span>
           <span id="login-alert-msg"></span>
         </div>
 
         <div class="field">
-          <label for="li-username">Username</label>
-          <div class="input-wrap">
-            <input type="text" id="li-username" placeholder="your_username" autocomplete="username" style="padding-left:14px;" />
-          </div>
-          <span class="field-error" id="li-username-err"></span>
+          <label for="li-user">Username</label>
+          <input type="text" id="li-user" placeholder="your_username" autocomplete="username" />
+          <span class="field-err" id="li-user-err"></span>
         </div>
 
         <div class="field">
-          <label for="li-password">Password</label>
-          <div class="input-wrap">
-            <span class="input-icon">⬡</span>
-            <input type="password" id="li-password" placeholder="••••••••" autocomplete="current-password" />
-            <button type="button" class="pw-toggle" id="li-pw-toggle" aria-label="Toggle password visibility">👁</button>
+          <label for="li-pw">Password</label>
+          <div class="pw-wrap">
+            <input type="password" id="li-pw" placeholder="••••••••" autocomplete="current-password" />
+            <button type="button" class="pw-eye" id="li-eye">👁</button>
           </div>
-          <span class="field-error" id="li-password-err"></span>
+          <span class="field-err" id="li-pw-err"></span>
         </div>
 
-        <button class="btn btn-primary" id="login-btn" onclick="submitLogin()">
-          SIGN IN →
-        </button>
+        <button class="btn-primary" id="login-btn" onclick="submitLogin()">SIGN IN →</button>
       </div>
 
       <div class="auth-switch">
-        Don't have an account? <a onclick="showRegister()">Create one</a>
+        Don't have an account? <a onclick="goTo('page-register')">Create one</a>
+      </div>
+    </div>
+
+    <!-- ══════════ REGISTER PAGE ══════════ -->
+    <div class="auth-page hidden" id="page-register">
+      <div class="auth-top">
+        <div class="brand">
+          <div class="brand-dot"></div>
+          <span class="brand-name">RESEARCH_AGENT</span>
+        </div>
+        <div class="auth-heading">Create an account</div>
+        <div class="auth-sub">Start your first deep research session</div>
       </div>
 
-      <!-- ── REGISTER FORM ── -->
-      <div class="auth-card hidden" id="register-card">
-        <div id="register-alert" class="alert hidden">
+      <div class="auth-card">
+        <div id="reg-alert" class="alert hidden">
           <span class="alert-icon" id="reg-alert-icon">⚠</span>
-          <span id="register-alert-msg"></span>
+          <span id="reg-alert-msg"></span>
         </div>
 
         <div class="field">
-          <label for="rg-username">Username</label>
-          <div class="input-wrap">
-            <input type="text" id="rg-username" placeholder="your_username" autocomplete="username"
-                   oninput="clearFieldErr('rg-username')" style="padding-left:14px;" />
-          </div>
-          <span class="field-error" id="rg-username-err"></span>
+          <label for="rg-user">Username</label>
+          <input type="text" id="rg-user" placeholder="your_username" autocomplete="username"
+                 oninput="clrErr('rg-user')" />
+          <span class="field-err" id="rg-user-err"></span>
         </div>
 
         <div class="field">
           <label for="rg-email">Email address</label>
-          <div class="input-wrap">
-            <input type="text" id="rg-email" placeholder="you@example.com" autocomplete="email"
-                   oninput="clearFieldErr('rg-email')" style="padding-left:14px;" />
-          </div>
-          </div>
-          <span class="field-error" id="rg-email-err"></span>
+          <input type="text" id="rg-email" placeholder="you@example.com" autocomplete="email"
+                 oninput="clrErr('rg-email')" />
+          <span class="field-err" id="rg-email-err"></span>
         </div>
 
         <div class="field">
-          <label for="rg-password">Password</label>
-          <div class="input-wrap">
-            <span class="input-icon">⬡</span>
-            <input type="password" id="rg-password" placeholder="Min. 8 characters"
+          <label for="rg-pw">Password</label>
+          <div class="pw-wrap">
+            <input type="password" id="rg-pw" placeholder="Min. 8 characters"
                    autocomplete="new-password"
-                   oninput="updatePwStrength(this.value); clearFieldErr('rg-password')" />
-            <button type="button" class="pw-toggle" id="rg-pw-toggle" aria-label="Toggle password visibility">👁</button>
+                   oninput="pwStrength(this.value); clrErr('rg-pw')" />
+            <button type="button" class="pw-eye" id="rg-eye">👁</button>
           </div>
-          <div class="pw-strength">
+          <div class="pw-bars">
             <div class="pw-bar" id="pb1"></div>
             <div class="pw-bar" id="pb2"></div>
             <div class="pw-bar" id="pb3"></div>
             <div class="pw-bar" id="pb4"></div>
           </div>
-          <span class="field-error" id="rg-password-err"></span>
+          <span class="field-err" id="rg-pw-err"></span>
         </div>
 
         <div class="field">
           <label for="rg-confirm">Confirm password</label>
-          <div class="input-wrap">
-            <span class="input-icon">⬡</span>
+          <div class="pw-wrap">
             <input type="password" id="rg-confirm" placeholder="Repeat password"
                    autocomplete="new-password"
-                   oninput="clearFieldErr('rg-confirm')" />
+                   oninput="clrErr('rg-confirm')" />
           </div>
-          <span class="field-error" id="rg-confirm-err"></span>
+          <span class="field-err" id="rg-confirm-err"></span>
         </div>
 
-        <button class="btn btn-primary" id="register-btn" onclick="submitRegister()">
-          CREATE ACCOUNT →
-        </button>
+        <button class="btn-primary" id="reg-btn" onclick="submitRegister()">CREATE ACCOUNT →</button>
       </div>
 
-      <div class="auth-switch hidden" id="switch-to-login">
-        Already have an account? <a onclick="showLogin()">Sign in</a>
+      <div class="auth-switch">
+        Already have an account? <a onclick="goTo('page-login')">Sign in</a>
       </div>
+    </div>
 
-    </div><!-- /auth-wrapper -->
+    <!-- ══════════ AGENT PAGE ══════════ -->
+    <div class="agent-page hidden" id="page-agent">
 
-
-    <!-- ─────────── AGENT UI ─────────── -->
-    <div class="agent-wrapper hidden" id="agent-view">
-
-      <!-- HERO -->
       <div class="hero">
         <h1>Deep research,<br/><span>automatically.</span></h1>
-        <p>Multi-agent pipeline that plans, crawls, writes, self-critiques, and exports a cited PDF report — no human in the loop.</p>
+        <p>Multi-agent pipeline that plans, crawls, writes, fact-checks, and exports a cited PDF report.</p>
       </div>
 
-      <!-- STEP 1: INPUT -->
       <div id="step-input" class="card">
         <div class="input-row">
-          <input type="text" id="topic-input" placeholder="e.g. The Rise and Fall of Nokia" autocomplete="off" />
+          <input class="topic-input" type="text" id="topic-input"
+                 placeholder="e.g. The Rise and Fall of Nokia" autocomplete="off" />
           <button class="btn-plan" id="plan-btn" onclick="planResearch()">PLAN →</button>
         </div>
       </div>
 
-      <!-- STEP 2: QUERY PLAN -->
       <div id="step-plan" class="card hidden">
         <div class="plan-header">
           <span class="plan-label">Search Plan</span>
@@ -758,326 +599,125 @@
         <div class="query-list" id="query-list"></div>
         <div class="reasoning-box" id="reasoning-box"></div>
         <button class="btn-approve" onclick="startResearch()">APPROVE & START RESEARCH →</button>
-        <button class="btn-reject" onclick="rejectPlan()">← REJECT & REPLAN</button>
+        <button class="btn-ghost" onclick="rejectPlan()">← REJECT & REPLAN</button>
       </div>
 
-      <!-- STEP 3: PROGRESS -->
       <div id="step-progress" class="card hidden">
         <div class="progress-section">
           <div class="progress-header">
             <span class="progress-topic" id="progress-topic"></span>
             <span class="progress-pct" id="progress-pct">0%</span>
           </div>
-          <div class="progress-bar-wrap">
-            <div class="progress-bar-fill" id="progress-bar" style="width:0%"></div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progress-bar" style="width:0%"></div>
           </div>
           <div class="node-log" id="node-log"></div>
         </div>
       </div>
 
-      <!-- STEP 4: RESULT -->
       <div id="step-result" class="result-card hidden">
         <div class="result-title">Report Ready</div>
-        <div class="result-sub" id="result-sub">Your research report has been generated.</div>
+        <div class="result-sub" id="result-sub"></div>
         <div class="result-actions">
           <button class="btn-view" onclick="viewPDF()">VIEW REPORT</button>
-          <button class="btn-dl" onclick="downloadPDF()">DOWNLOAD PDF</button>
+          <button class="btn-dl"   onclick="downloadPDF()">DOWNLOAD PDF</button>
         </div>
         <br/>
-        <button class="btn-new" onclick="resetUI()">← NEW RESEARCH</button>
+        <button class="btn-new" onclick="resetAgent()">← NEW RESEARCH</button>
       </div>
 
-      <!-- ERROR -->
       <div id="step-error" class="error-box hidden"></div>
 
-    </div><!-- /agent-wrapper -->
+    </div>
 
   </main>
-</div><!-- /shell -->
+</div>
 
 <script>
-/* ═══════════════════════════════════════════════════════
-   STATE
-═══════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════
+   GLOBALS
+══════════════════════════════════════════ */
 let sessionId    = null;
-let pollInterval = null;
-let approvedQueries = [];
+let pollTimer    = null;
+let queries      = [];
 
 const NODES = [
-  { key: "strategist",         label: "STRATEGIST",    icon: "◈" },
-  { key: "crawler",            label: "CRAWLER",       icon: "◎" },
-  { key: "architect",          label: "ARCHITECT",     icon: "◇" },
-  { key: "section_challenger", label: "CHALLENGER",    icon: "◆" },
-  { key: "targeted_rewrite",   label: "REWRITER",      icon: "◈" },
-  { key: "factcheck",          label: "FACTCHECK",     icon: "◉" },
-  { key: "critic",             label: "CRITIC",        icon: "◐" },
-  { key: "exporting",          label: "EXPORTING PDF", icon: "◑" },
-  { key: "done",               label: "COMPLETE",      icon: "●" },
+  { key:"strategist",         label:"STRATEGIST",    icon:"◈" },
+  { key:"crawler",            label:"CRAWLER",       icon:"◎" },
+  { key:"architect",          label:"ARCHITECT",     icon:"◇" },
+  { key:"section_challenger", label:"CHALLENGER",    icon:"◆" },
+  { key:"targeted_rewrite",   label:"REWRITER",      icon:"◈" },
+  { key:"factcheck",          label:"FACTCHECK",     icon:"◉" },
+  { key:"critic",             label:"CRITIC",        icon:"◐" },
+  { key:"exporting",          label:"EXPORTING PDF", icon:"◑" },
+  { key:"done",               label:"COMPLETE",      icon:"●" },
 ];
 
-/* ═══════════════════════════════════════════════════════
-   HELPERS
-═══════════════════════════════════════════════════════ */
-const $  = id => document.getElementById(id);
+/* ══════════════════════════════════════════
+   UTILS
+══════════════════════════════════════════ */
+const $   = id => document.getElementById(id);
 const show = id => $(id).classList.remove('hidden');
 const hide = id => $(id).classList.add('hidden');
 
-function getToken() { return localStorage.getItem('access_token'); }
-function setToken(t) { localStorage.setItem('access_token', t); }
-function clearToken() { localStorage.removeItem('access_token'); }
+const getToken   = ()  => localStorage.getItem('_ra_tok');
+const setToken   = t   => localStorage.setItem('_ra_tok', t);
+const clearToken = ()  => localStorage.removeItem('_ra_tok');
 
-function authHeaders() {
-  return { 'Authorization': `Bearer ${getToken()}`, 'Content-Type': 'application/json' };
+const authHdr = () => ({
+  'Authorization': `Bearer ${getToken()}`,
+  'Content-Type':  'application/json',
+});
+
+function goTo(pageId) {
+  ['page-login','page-register','page-agent'].forEach(hide);
+  show(pageId);
 }
 
-function setLoading(btnId, loading, label) {
-  const btn = $(btnId);
-  btn.disabled = loading;
-  btn.innerHTML = loading
-    ? `<span class="spinner${btnId === 'login-btn' || btnId === 'register-btn' ? '' : '-dark'}"></span>`
-    : label;
+function setBtn(id, loading, label) {
+  const b = $(id);
+  b.disabled  = loading;
+  b.innerHTML = loading ? '<span class="spin"></span>' : label;
 }
 
-function clearFieldErr(fieldId) {
-  const inp = $(fieldId);
-  const err = $(`${fieldId}-err`);
-  if (inp) inp.classList.remove('err');
-  if (err) err.textContent = '';
+function clrErr(id) {
+  const inp = $(id);       if (inp) inp.classList.remove('err');
+  const err = $(`${id}-err`); if (err) err.textContent = '';
 }
 
-function setFieldErr(fieldId, msg) {
-  const inp = $(fieldId);
-  const err = $(`${fieldId}-err`);
-  if (inp) inp.classList.add('err');
-  if (err) err.textContent = msg;
+function setErr(id, msg) {
+  const inp = $(id);       if (inp) inp.classList.add('err');
+  const err = $(`${id}-err`); if (err) err.textContent = msg;
 }
 
-function showAlert(alertId, msgId, msg, type = 'error') {
+function showAlert(alertId, iconId, msgId, msg, type) {
   const el = $(alertId);
   el.className = `alert alert-${type}`;
+  if (iconId) $(iconId).textContent = type === 'ok' ? '✓' : '⚠';
   $(msgId).textContent = msg;
   show(alertId);
 }
 
-function hideAlert(alertId) { hide(alertId); }
-
-/* ═══════════════════════════════════════════════════════
-   AUTH: PAGE SWITCHING
-═══════════════════════════════════════════════════════ */
-function showLogin() {
-  show('login-card');
-  hide('register-card');
-  show('heading-login');
-  hide('heading-register');
-  show('auth-view');
-  hide('switch-to-login');
-  // The default switch link is always visible when login card is shown
-  document.querySelector('.auth-switch:not(#switch-to-login)').classList.remove('hidden');
-}
-
-function showRegister() {
-  hide('login-card');
-  show('register-card');
-  hide('heading-login');
-  show('heading-register');
-  show('switch-to-login');
-  document.querySelector('.auth-switch:not(#switch-to-login)').classList.add('hidden');
-}
-
-/* ═══════════════════════════════════════════════════════
-   AUTH: LOGIN
-═══════════════════════════════════════════════════════ */
-async function submitLogin() {
-  hideAlert('login-alert');
-  clearFieldErr('li-username');
-  clearFieldErr('li-password');
-
-  const username = $('li-username').value.trim();
-  const password = $('li-password').value;
-
-  if (!username) { setFieldErr('li-username', 'Username is required'); return; }
-  if (!password) { setFieldErr('li-password', 'Password is required'); return; }
-
-  setLoading('login-btn', true);
-
-  try {
-    const form = new URLSearchParams();
-    form.append('username', username);
-    form.append('password', password);
-
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form,
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || 'Incorrect username or password');
-    }
-
-    const data = await res.json();
-    setToken(data.access_token);
-    await loadUserAndShowAgent();
-
-  } catch (e) {
-    showAlert('login-alert', 'login-alert-msg', e.message);
-  } finally {
-    setLoading('login-btn', false, 'SIGN IN →');
-  }
-}
-
-/* ═══════════════════════════════════════════════════════
-   AUTH: REGISTER
-═══════════════════════════════════════════════════════ */
-function updatePwStrength(pw) {
-  let score = 0;
-  if (pw.length >= 8)           score++;
-  if (/[A-Z]/.test(pw))         score++;
-  if (/[0-9]/.test(pw))         score++;
-  if (/[^A-Za-z0-9]/.test(pw))  score++;
-
-  const classes = ['', 'weak', 'fair', 'fair', 'strong'];
-  for (let i = 1; i <= 4; i++) {
-    const bar = $(`pb${i}`);
-    bar.className = 'pw-bar';
-    if (i <= score) bar.classList.add(score <= 1 ? 'weak' : score <= 3 ? 'fair' : 'strong');
-  }
-}
-
-function validateEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-async function submitRegister() {
-  hideAlert('register-alert');
-  ['rg-username','rg-email','rg-password','rg-confirm'].forEach(clearFieldErr);
-
-  const username = $('rg-username').value.trim();
-  const email    = $('rg-email').value.trim();
-  const password = $('rg-password').value;
-  const confirm  = $('rg-confirm').value;
-
-  let valid = true;
-
-  if (!username || username.length < 3) {
-    setFieldErr('rg-username', 'At least 3 characters'); valid = false;
-  } else if (!/^[a-zA-Z0-9_]+$/.test(username)) {
-    setFieldErr('rg-username', 'Letters, numbers, and underscores only'); valid = false;
-  }
-
-  if (!email || !validateEmail(email)) {
-    setFieldErr('rg-email', 'Enter a valid email address'); valid = false;
-  }
-
-  if (!password || password.length < 8) {
-    setFieldErr('rg-password', 'Minimum 8 characters'); valid = false;
-  }
-
-  if (password !== confirm) {
-    setFieldErr('rg-confirm', 'Passwords do not match'); valid = false;
-  }
-
-  if (!valid) return;
-
-  setLoading('register-btn', true);
-
-  try {
-    const res = await fetch('/api/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, email, password }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || 'Registration failed');
-    }
-
-    const data = await res.json();
-    setToken(data.access_token);
-
-    // Flash success before transitioning
-    showAlert('register-alert', 'register-alert-msg', `Account created! Welcome, ${username}`, 'success');
-    $('register-alert').querySelector('.alert-icon').textContent = '✓';
-
-    setTimeout(async () => { await loadUserAndShowAgent(); }, 900);
-
-  } catch (e) {
-    $('register-alert').querySelector('.alert-icon').textContent = '⚠';
-    showAlert('register-alert', 'register-alert-msg', e.message, 'error');
-  } finally {
-    setLoading('register-btn', false, 'CREATE ACCOUNT →');
-  }
-}
-
-/* ═══════════════════════════════════════════════════════
-   AUTH: LOAD USER & SHOW AGENT
-═══════════════════════════════════════════════════════ */
-async function loadUserAndShowAgent() {
-  try {
-    const res = await fetch('/api/me', { headers: authHeaders() });
-    if (!res.ok) throw new Error('Unauthorized');
-    const user = await res.json();
-
-    // Update header
-    $('header-username').innerHTML = `<span>${user.username}</span>`;
-    show('header-username');
-    show('header-logout-btn');
-
-    // Switch views
-    hide('auth-view');
-    show('agent-view');
-  } catch {
-    clearToken();
-    showLogin();
-  }
-}
-
-/* ═══════════════════════════════════════════════════════
-   AUTH: LOGOUT
-═══════════════════════════════════════════════════════ */
-function logout() {
-  clearToken();
-  sessionId = null;
-  if (pollInterval) clearInterval(pollInterval);
-
-  hide('header-username');
-  hide('header-logout-btn');
-  hide('agent-view');
-  show('auth-view');
-  showLogin();
-
-  // Reset agent UI
-  resetUI();
-  $('li-username').value = '';
-  $('li-password').value = '';
-}
-
-$('header-logout-btn').addEventListener('click', logout);
-
-/* ═══════════════════════════════════════════════════════
-   BOOT: CHECK EXISTING SESSION
-═══════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════
+   BOOT
+══════════════════════════════════════════ */
 window.addEventListener('DOMContentLoaded', async () => {
-  if (getToken()) {
-    await loadUserAndShowAgent();
-  }
+  // eye toggles
+  pwEye('li-pw',      'li-eye');
+  pwEye('rg-pw',      'rg-eye');
 
-  // Enter key on login
-  $('li-password').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
-  $('li-username').addEventListener('keydown', e => { if (e.key === 'Enter') submitLogin(); });
-  $('rg-confirm').addEventListener('keydown', e => { if (e.key === 'Enter') submitRegister(); });
+  // enter keys
+  $('li-pw').addEventListener('keydown',      e => e.key==='Enter' && submitLogin());
+  $('li-user').addEventListener('keydown',    e => e.key==='Enter' && submitLogin());
+  $('rg-confirm').addEventListener('keydown', e => e.key==='Enter' && submitRegister());
+  $('topic-input').addEventListener('keydown',e => e.key==='Enter' && planResearch());
 
-  // Password visibility toggles
-  setupPwToggle('li-password', 'li-pw-toggle');
-  setupPwToggle('rg-password', 'rg-pw-toggle');
+  $('hdr-logout').addEventListener('click', logout);
 
-  // Enter on topic input
-  $('topic-input').addEventListener('keydown', e => { if (e.key === 'Enter') planResearch(); });
+  if (getToken()) await loadUser();
 });
 
-function setupPwToggle(inputId, btnId) {
+function pwEye(inputId, btnId) {
   $(btnId).addEventListener('click', () => {
     const inp = $(inputId);
     inp.type = inp.type === 'password' ? 'text' : 'password';
@@ -1085,187 +725,250 @@ function setupPwToggle(inputId, btnId) {
   });
 }
 
-/* ═══════════════════════════════════════════════════════
-   AGENT: RESEARCH PIPELINE
-═══════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════
+   AUTH — LOGIN
+══════════════════════════════════════════ */
+async function submitLogin() {
+  hide('login-alert');
+  clrErr('li-user'); clrErr('li-pw');
+
+  const username = $('li-user').value.trim();
+  const password = $('li-pw').value;
+
+  if (!username) { setErr('li-user', 'Username is required'); return; }
+  if (!password) { setErr('li-pw',   'Password is required'); return; }
+
+  setBtn('login-btn', true);
+  try {
+    const form = new URLSearchParams();
+    form.append('username', username);
+    form.append('password', password);
+
+    const res = await fetch('/api/login', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    form,
+    });
+
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.detail || 'Incorrect username or password');
+    }
+
+    const data = await res.json();
+    setToken(data.access_token);
+    await loadUser();
+
+  } catch(e) {
+    showAlert('login-alert', null, 'login-alert-msg', e.message, 'err');
+  } finally {
+    setBtn('login-btn', false, 'SIGN IN →');
+  }
+}
+
+/* ══════════════════════════════════════════
+   AUTH — REGISTER
+══════════════════════════════════════════ */
+function pwStrength(pw) {
+  let s = 0;
+  if (pw.length >= 8)          s++;
+  if (/[A-Z]/.test(pw))        s++;
+  if (/[0-9]/.test(pw))        s++;
+  if (/[^A-Za-z0-9]/.test(pw)) s++;
+  for (let i = 1; i <= 4; i++) {
+    const bar = $(`pb${i}`);
+    bar.className = 'pw-bar';
+    if (i <= s) bar.classList.add(s <= 1 ? 'weak' : s <= 3 ? 'fair' : 'strong');
+  }
+}
+
+async function submitRegister() {
+  hide('reg-alert');
+  ['rg-user','rg-email','rg-pw','rg-confirm'].forEach(clrErr);
+
+  const username = $('rg-user').value.trim();
+  const email    = $('rg-email').value.trim();
+  const password = $('rg-pw').value;
+  const confirm  = $('rg-confirm').value;
+
+  let ok = true;
+  if (!username || username.length < 3) { setErr('rg-user', 'At least 3 characters'); ok = false; }
+  else if (!/^[a-zA-Z0-9_]+$/.test(username)) { setErr('rg-user', 'Letters, numbers and underscores only'); ok = false; }
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setErr('rg-email', 'Enter a valid email address'); ok = false; }
+  if (!password || password.length < 8) { setErr('rg-pw', 'Minimum 8 characters'); ok = false; }
+  if (password !== confirm) { setErr('rg-confirm', 'Passwords do not match'); ok = false; }
+  if (!ok) return;
+
+  setBtn('reg-btn', true);
+  try {
+    const res = await fetch('/api/register', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ username, email, password }),
+    });
+
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.detail || 'Registration failed');
+    }
+
+    const data = await res.json();
+    setToken(data.access_token);
+    showAlert('reg-alert', 'reg-alert-icon', 'reg-alert-msg', `Account created! Welcome, ${username}`, 'ok');
+    setTimeout(() => loadUser(), 900);
+
+  } catch(e) {
+    showAlert('reg-alert', 'reg-alert-icon', 'reg-alert-msg', e.message, 'err');
+  } finally {
+    setBtn('reg-btn', false, 'CREATE ACCOUNT →');
+  }
+}
+
+/* ══════════════════════════════════════════
+   AUTH — LOAD USER / LOGOUT
+══════════════════════════════════════════ */
+async function loadUser() {
+  try {
+    const res = await fetch('/api/me', { headers: authHdr() });
+    if (!res.ok) throw new Error();
+    const user = await res.json();
+
+    $('hdr-user').innerHTML = `<span>${user.username}</span>`;
+    show('hdr-user');
+    show('hdr-logout');
+    goTo('page-agent');
+  } catch {
+    clearToken();
+    goTo('page-login');
+  }
+}
+
+function logout() {
+  clearToken();
+  if (pollTimer) clearInterval(pollTimer);
+  hide('hdr-user');
+  hide('hdr-logout');
+  resetAgent();
+  $('li-user').value = '';
+  $('li-pw').value   = '';
+  goTo('page-login');
+}
+
+/* ══════════════════════════════════════════
+   AGENT
+══════════════════════════════════════════ */
 async function planResearch() {
   const topic = $('topic-input').value.trim();
   if (!topic) return;
 
   const btn = $('plan-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-dark"></span>';
+  btn.disabled  = true;
+  btn.innerHTML = '<span class="spin-dark"></span>';
 
   try {
     const res = await fetch('/research/plan', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ topic }),
+      method:  'POST',
+      headers: authHdr(),
+      body:    JSON.stringify({ topic }),
     });
-
     if (res.status === 401) { logout(); return; }
     if (!res.ok) throw new Error(await res.text());
 
     const data = await res.json();
     sessionId = data.session_id;
-
-    approvedQueries = [...data.queries];
-    renderQueryList();
+    queries   = [...data.queries];
+    renderQueries();
     $('reasoning-box').textContent = data.reasoning;
-
     hide('step-input');
     show('step-plan');
 
-  } catch(e) {
-    showResearchError(e.message);
-  } finally {
-    btn.disabled = false;
+  } catch(e) { agentError(e.message); }
+  finally {
+    btn.disabled  = false;
     btn.innerHTML = 'PLAN →';
   }
 }
 
-function renderQueryList() {
-  const list = $('query-list');
-  list.innerHTML = approvedQueries.map((q, i) =>
+function renderQueries() {
+  $('query-list').innerHTML = queries.map((q, i) =>
     `<div class="query-item">
-      <span class="query-num">${String(i+1).padStart(2,'0')}</span>
-      <span class="query-text">${q}</span>
-      <button class="query-remove" onclick="removeQuery(${i})" title="Remove">×</button>
+      <span class="qnum">${String(i+1).padStart(2,'0')}</span>
+      <span class="qtext">${q}</span>
+      <button class="qremove" onclick="removeQuery(${i})">×</button>
     </div>`
   ).join('');
-  $('query-count').textContent = `${approvedQueries.length} queries`;
+  $('query-count').textContent = `${queries.length} queries`;
 }
 
-function removeQuery(idx) {
-  approvedQueries.splice(idx, 1);
-  renderQueryList();
-}
-
-function rejectPlan() {
-  sessionId = null;
-  approvedQueries = [];
-  hide('step-plan');
-  show('step-input');
-  $('topic-input').focus();
-}
+function removeQuery(i) { queries.splice(i, 1); renderQueries(); }
+function rejectPlan()   { sessionId = null; queries = []; hide('step-plan'); show('step-input'); $('topic-input').focus(); }
 
 async function startResearch() {
   hide('step-plan');
   show('step-progress');
-
-  const topic = $('topic-input').value.trim();
-  $('progress-topic').textContent = topic;
-
-  const log = $('node-log');
-  log.innerHTML = NODES.map(n =>
-    `<div class="node-item" id="node-${n.key}">
-      <span class="node-icon">${n.icon}</span>
-      <span>${n.label}</span>
-    </div>`
+  $('progress-topic').textContent = $('topic-input').value.trim();
+  $('node-log').innerHTML = NODES.map(n =>
+    `<div class="node-item" id="n-${n.key}"><span class="node-icon">${n.icon}</span><span>${n.label}</span></div>`
   ).join('');
 
   try {
     const res = await fetch('/research/start', {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ session_id: sessionId, queries: approvedQueries }),
+      method:  'POST',
+      headers: authHdr(),
+      body:    JSON.stringify({ session_id: sessionId, queries }),
     });
     if (res.status === 401) { logout(); return; }
     if (!res.ok) throw new Error(await res.text());
-
-    pollInterval = setInterval(pollStatus, 2000);
-
-  } catch(e) {
-    showResearchError(e.message);
-  }
+    pollTimer = setInterval(pollStatus, 2000);
+  } catch(e) { agentError(e.message); }
 }
 
 async function pollStatus() {
   try {
-    const res = await fetch(`/research/status/${sessionId}`, { headers: authHeaders() });
-    if (res.status === 401) { clearInterval(pollInterval); logout(); return; }
-    const data = await res.json();
+    const res = await fetch(`/research/status/${sessionId}`, { headers: authHdr() });
+    if (res.status === 401) { clearInterval(pollTimer); logout(); return; }
+    const d = await res.json();
 
-    $('progress-bar').style.width  = data.progress + '%';
-    $('progress-pct').textContent  = data.progress + '%';
+    $('progress-bar').style.width = d.progress + '%';
+    $('progress-pct').textContent = d.progress + '%';
 
-    const currentIdx = NODES.findIndex(n => n.key === data.current_node);
+    const cur = NODES.findIndex(n => n.key === d.current_node);
     NODES.forEach((n, i) => {
-      const el = $(`node-${n.key}`);
+      const el = $(`n-${n.key}`);
       if (!el) return;
-      el.classList.remove('active', 'done');
-      if (i < currentIdx)      el.classList.add('done');
-      else if (i === currentIdx) el.classList.add('active');
+      el.classList.remove('active','done');
+      if (i < cur)       el.classList.add('done');
+      else if (i === cur) el.classList.add('active');
     });
 
-    if (data.status === 'done') {
-      clearInterval(pollInterval);
+    if (d.status === 'done') {
+      clearInterval(pollTimer);
       hide('step-progress');
-      show('step-result');
       $('result-sub').textContent = $('topic-input').value.trim();
+      show('step-result');
     }
-
-    if (data.status === 'error') {
-      clearInterval(pollInterval);
+    if (d.status === 'error') {
+      clearInterval(pollTimer);
       hide('step-progress');
-      showResearchError(data.error || 'Unknown error');
+      agentError(d.error || 'Unknown error');
     }
-
-  } catch(e) {
-    clearInterval(pollInterval);
-    showResearchError(e.message);
-  }
+  } catch(e) { clearInterval(pollTimer); agentError(e.message); }
 }
 
 function viewPDF()     { window.open(`/research/result/${sessionId}`, '_blank'); }
 function downloadPDF() { window.location.href = `/research/download/${sessionId}`; }
 
-function showResearchError(msg) {
+function agentError(msg) {
   const el = $('step-error');
-  if (msg.includes('Not enough sources')) {
-    el.innerHTML = '⚠ <strong>Topic not found on the web.</strong><br/>'
-      + msg.split('(')[0].trim()
-      + '<br/><small>Try a well-known company, technology, event, or person.</small>'
-      + '<br/><br/><button class="btn-reject" onclick="resetUI()">← TRY AGAIN</button>';
-  } else if (msg.includes('rate limited') || msg.includes('try again in')) {
-    el.innerHTML = '⚠ <strong>API limit reached.</strong><br/>All inference keys are busy. Please wait a few minutes.'
-      + '<br/><br/><span id="countdown-text" style="font-family:var(--mono);color:var(--accent);font-size:13px;">Retry in 5:00</span>'
-      + '<br/><br/><button class="btn-reject" id="retry-btn" onclick="resetUI()" disabled>← TRY AGAIN</button>';
-    el.classList.remove('hidden');
-    startCountdown(300);
-    return;
-  } else {
-    el.innerHTML = '⚠ ' + msg
-      + '<br/><br/><button class="btn-reject" onclick="resetUI()">← TRY AGAIN</button>';
-  }
-  el.classList.remove('hidden');
+  el.innerHTML = `⚠ ${msg}<br/><br/><button class="btn-ghost" style="width:auto;padding:8px 20px;" onclick="resetAgent()">← TRY AGAIN</button>`;
+  show('step-error');
 }
 
-function startCountdown(seconds) {
-  let remaining = seconds;
-  const interval = setInterval(() => {
-    remaining--;
-    const m = Math.floor(remaining / 60);
-    const s = remaining % 60;
-    const el = $('countdown-text');
-    const btn = $('retry-btn');
-    if (el) el.textContent = `Retry in ${m}:${String(s).padStart(2,'0')}`;
-    if (remaining <= 0) {
-      clearInterval(interval);
-      if (el)  el.textContent  = 'Ready to retry!';
-      if (btn) { btn.disabled = false; btn.textContent = '← TRY AGAIN'; }
-    }
-  }, 1000);
-}
-
-function resetUI() {
-  sessionId = null;
-  if (pollInterval) clearInterval(pollInterval);
+function resetAgent() {
+  if (pollTimer) clearInterval(pollTimer);
+  sessionId = null; queries = [];
   $('topic-input').value = '';
-  hide('step-plan');
-  hide('step-progress');
-  hide('step-result');
-  hide('step-error');
+  ['step-plan','step-progress','step-result','step-error'].forEach(hide);
   show('step-input');
 }
 </script>
