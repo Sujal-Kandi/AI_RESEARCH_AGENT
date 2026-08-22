@@ -66,6 +66,9 @@ def _init_llm():
         _groq_keys = [k.strip() for k in [
             os.getenv("GROQ_API_KEY", ""),
             os.getenv("GROQ_API_KEY_2", ""),
+            os.getenv("GROQ_API_KEY_3", ""),
+            os.getenv("GROQ_API_KEY_4", ""),
+            os.getenv("GROQ_API_KEY_5", ""),
         ] if k and k.strip()]
         print(f"  [INIT] Loaded {len(_groq_keys)} Groq keys")
     if llm is None and _groq_keys:
