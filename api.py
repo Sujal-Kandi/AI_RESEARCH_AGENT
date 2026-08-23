@@ -6,42 +6,54 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-
 import uvicorn
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, StreamingResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel
 
 from auth import create_access_token, create_user, get_current_user, get_user_by_email, verify_password
 from schemas import Token, UserData, UserLogin, UserRegister
+from database import get_conn, init_db
 
-# ── App & Router ───────────────────────────────────────────────────────────────
-from contextlib import asynccontextmanager
+# rate limiter
+limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load secrets from Render secret file first, then fall back to local .env
     load_dotenv(dotenv_path="/etc/secrets/.env", override=False)
     load_dotenv(dotenv_path=".env", override=False)
+
+    # init PostgreSQL tables
+    try:
+        init_db()
+    except Exception as e:
+        print(f"[DB INIT ERROR] {e}")
 
     keys = {
         "TAVILY_API_KEY":   bool(os.getenv("TAVILY_API_KEY")),
         "GROQ_API_KEY":     bool(os.getenv("GROQ_API_KEY")),
         "GROQ_API_KEY_2":   bool(os.getenv("GROQ_API_KEY_2")),
         "TOGETHER_API_KEY": bool(os.getenv("TOGETHER_API_KEY")),
+        "DATABASE_URL":     bool(os.getenv("DATABASE_URL")),
     }
-    print(f"[STARTUP] Environment keys loaded: {keys}")
+    print(f"[STARTUP] Keys loaded: {keys}")
     yield
 
 app = FastAPI(title="AI Research Agent", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 router = APIRouter(prefix="/api")
 
 
-# ── AUTH ENDPOINTS ─────────────────────────────────────────────────────────────
+# auth endpoints
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
-async def register(body: UserRegister):
-    """Create a new account and return a JWT so the user is immediately logged in."""
+@limiter.limit("5/minute")
+async def register(request: Request, body: UserRegister):
     user = create_user(
         username=body.username,
         email=body.email,
@@ -56,8 +68,8 @@ async def register(body: UserRegister):
 
 
 @router.post("/login", response_model=Token)
-async def login(body: UserLogin):
-    """Authenticate with email + password and return a JWT."""
+@limiter.limit("10/minute")
+async def login(request: Request, body: UserLogin):
     user = get_user_by_email(body.email)
     if not user or not verify_password(body.password, user["hashed_pw"]):
         raise HTTPException(
@@ -75,23 +87,69 @@ async def login(body: UserLogin):
 
 @router.get("/me", response_model=UserData)
 async def get_me(current_user: UserData = Depends(get_current_user)):
-    """Return the currently authenticated user's profile."""
     return current_user
 
 
-# ── Include auth router ────────────────────────────────────────────────────────
+@router.get("/history")
+async def get_history(current_user: UserData = Depends(get_current_user)):
+    """Return list of past reports for the logged-in user."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, topic, filename, created_at
+                    FROM reports
+                    WHERE user_id = (SELECT id FROM users WHERE LOWER(username) = LOWER(%s))
+                    ORDER BY created_at DESC
+                    LIMIT 50
+                    """,
+                    (current_user.username,)
+                )
+                rows = cur.fetchall()
+        return {"reports": [dict(r) for r in rows]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/history/{report_id}/download")
+async def download_history_report(
+    report_id: str,
+    current_user: UserData = Depends(get_current_user),
+):
+    """Download a past report PDF by its ID."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT r.pdf_bytes, r.filename
+                    FROM reports r
+                    JOIN users u ON r.user_id = u.id
+                    WHERE r.id = %s AND LOWER(u.username) = LOWER(%s)
+                    """,
+                    (report_id, current_user.username)
+                )
+                row = cur.fetchone()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    return StreamingResponse(
+        io.BytesIO(bytes(row["pdf_bytes"])),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=\"{row['filename']}\""},
+    )
+
+
 app.include_router(router)
 
-
-# ── Startup check ─────────────────────────────────────────────────────────────
-
-
-
-# ── SESSION STORE ──────────────────────────────────────────────────────────────
+# in-memory session store (pipeline state lives here during processing)
 sessions: dict = {}
 
 
-# ── REQUEST MODELS ─────────────────────────────────────────────────────────────
 class PlanRequest(BaseModel):
     topic: str
 
@@ -100,13 +158,14 @@ class StartRequest(BaseModel):
     queries: list = []
 
 
-# ── STEP 1: PLAN ──────────────────────────────────────────────────────────────
+# step 1: plan
 @app.post("/research/plan")
+@limiter.limit("20/minute")
 def plan_research(
+    request: Request,
     req: PlanRequest,
     current_user: UserData = Depends(get_current_user),
 ):
-    """Run strategist node, return queries for user approval."""
     import traceback
     try:
         from agent import AgentState, strategist_node
@@ -160,13 +219,12 @@ def plan_research(
     }
 
 
-# ── STEP 2: START ─────────────────────────────────────────────────────────────
+# step 2: start
 @app.post("/research/start")
 def start_research(
     req: StartRequest,
     current_user: UserData = Depends(get_current_user),
 ):
-    """User approved the plan — kick off the full pipeline in a background thread."""
     session = sessions.get(req.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -177,14 +235,46 @@ def start_research(
     if req.queries:
         session["_state"]["plan"].queries = req.queries
 
-    thread = threading.Thread(target=_run_pipeline, args=(req.session_id,), daemon=True)
+    thread = threading.Thread(
+        target=_run_pipeline,
+        args=(req.session_id, current_user.username),
+        daemon=True
+    )
     thread.start()
 
     return {"session_id": req.session_id, "status": "running"}
 
 
-def _run_pipeline(session_id: str):
-    """Background thread: runs the full multi-agent pipeline."""
+def _save_report_to_db(username: str, topic: str, pdf_bytes: bytes, filename: str):
+    """Save completed report to PostgreSQL for history."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM users WHERE LOWER(username) = LOWER(%s)", (username,))
+                user_row = cur.fetchone()
+                if not user_row:
+                    print(f"[DB] User {username} not found, skipping report save")
+                    return
+                cur.execute(
+                    """
+                    INSERT INTO reports (id, user_id, topic, filename, pdf_bytes)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (str(uuid.uuid4()), user_row["id"], topic, filename, psycopg2_bytes(pdf_bytes))
+                )
+            conn.commit()
+        print(f"[DB] Report saved for {username}: {filename}")
+    except Exception as e:
+        print(f"[DB] Failed to save report: {e}")
+
+
+def psycopg2_bytes(data: bytes):
+    """Wrap bytes for psycopg2 binary insert."""
+    from psycopg2 import Binary
+    return Binary(data)
+
+
+def _run_pipeline(session_id: str, username: str):
     session = sessions[session_id]
     state = session["_state"].copy()
 
@@ -226,7 +316,6 @@ def _run_pipeline(session_id: str):
         update("critic", 88)
         state.update(critic_node(state))
 
-        # One refine loop if needed
         if should_refine(state) == "refine":
             update("refine", 90)
             state.update(refine_node(state))
@@ -253,12 +342,17 @@ def _run_pipeline(session_id: str):
         except Exception:
             pass
 
+        pdf_filename = Path(pdf_path).name
+
+        # save to PostgreSQL history
+        _save_report_to_db(username, state["topic"], pdf_bytes, pdf_filename)
+
         session.update({
             "status": "done",
             "current_node": "done",
             "progress": 100,
             "pdf_bytes": pdf_bytes,
-            "pdf_filename": Path(pdf_path).name,
+            "pdf_filename": pdf_filename,
         })
 
     except Exception as e:
@@ -270,7 +364,7 @@ def _run_pipeline(session_id: str):
         print(f"[PIPELINE ERROR] {e}")
 
 
-# ── STATUS ─────────────────────────────────────────────────────────────────────
+# status
 @app.get("/research/status/{session_id}")
 def get_status(
     session_id: str,
@@ -288,7 +382,7 @@ def get_status(
     }
 
 
-# ── RESULT: PDF ────────────────────────────────────────────────────────────────
+# view PDF inline
 @app.get("/research/result/{session_id}")
 def get_result(
     session_id: str,
@@ -303,8 +397,6 @@ def get_result(
     if not pdf_bytes:
         raise HTTPException(status_code=404, detail="PDF not found")
     filename = session.get("pdf_filename", "report.pdf")
-    if not filename.endswith(".pdf"):
-        filename += ".pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
@@ -312,12 +404,12 @@ def get_result(
     )
 
 
+# force download
 @app.get("/research/download/{session_id}")
 def download_result(
     session_id: str,
     current_user: UserData = Depends(get_current_user),
 ):
-    """Force-download the PDF."""
     session = sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -327,8 +419,6 @@ def download_result(
     if not pdf_bytes:
         raise HTTPException(status_code=404, detail="PDF not found")
     filename = session.get("pdf_filename", "report.pdf")
-    if not filename.endswith(".pdf"):
-        filename += ".pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
@@ -336,19 +426,18 @@ def download_result(
     )
 
 
-# ── DEBUG ──────────────────────────────────────────────────────────────────────
+# debug
 @app.get("/debug/env")
 def debug_env():
     return {
-        "TAVILY_API_KEY":   (os.getenv("TAVILY_API_KEY", "")[:8] + "...") if os.getenv("TAVILY_API_KEY") else "MISSING",
-        "GROQ_API_KEY":     (os.getenv("GROQ_API_KEY", "")[:8] + "...") if os.getenv("GROQ_API_KEY") else "MISSING",
-        "GROQ_API_KEY_2":   (os.getenv("GROQ_API_KEY_2", "")[:8] + "...") if os.getenv("GROQ_API_KEY_2") else "MISSING",
-        "TOGETHER_API_KEY": (os.getenv("TOGETHER_API_KEY", "")[:8] + "...") if os.getenv("TOGETHER_API_KEY") else "MISSING",
-        "secret_file_exists": os.path.exists("/etc/secrets/.env"),
+        "TAVILY_API_KEY":   "set" if os.getenv("TAVILY_API_KEY") else "MISSING",
+        "GROQ_API_KEY":     "set" if os.getenv("GROQ_API_KEY") else "MISSING",
+        "TOGETHER_API_KEY": "set" if os.getenv("TOGETHER_API_KEY") else "MISSING",
+        "DATABASE_URL":     "set" if os.getenv("DATABASE_URL") else "MISSING",
     }
 
 
-# ── UI ─────────────────────────────────────────────────────────────────────────
+# serve UI
 @app.get("/", response_class=HTMLResponse)
 def serve_ui():
     with open("ui.html", "r", encoding="utf-8") as f:

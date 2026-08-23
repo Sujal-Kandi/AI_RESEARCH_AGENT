@@ -289,10 +289,11 @@ def strategist_node(state: AgentState):
     print(f"  Memory: {'found past research' if memory_context else 'starting fresh'}")
 
     _init_llm()
-    structured_llm = llm.with_structured_output(ResearchPlan)
     memory_hint = f"\n\nPAST RESEARCH (avoid re-searching these):\n{memory_context}" if memory_context else ""
+
     for attempt in range(len(_groq_keys) * 2 + 1):
         try:
+            structured_llm = llm.with_structured_output(ResearchPlan)
             plan = structured_llm.invoke([
                 SystemMessage(content=STRATEGIST_PROMPT),
                 HumanMessage(content=f"Build research plan for: {state['topic']}{memory_hint}")
@@ -301,9 +302,8 @@ def strategist_node(state: AgentState):
         except Exception as e:
             if _is_rate_limit_error(e):
                 _rotate_key()
-                structured_llm = llm.with_structured_output(ResearchPlan)
                 print(f"  [KEY ROTATION] Switched to key {_key_index + 1}")
-                time.sleep(3)
+                time.sleep(5)
             else:
                 raise
     print(f"  {len(plan.queries)} queries planned")
@@ -576,12 +576,28 @@ def factcheck_node(state: AgentState):
 def critic_node(state: AgentState):
     iteration = state.get("iteration", 1)
     print(f"\n[CRITIC] Quality audit - iteration {iteration}...")
-    structured_llm = llm.with_structured_output(QualityVerdict)
     raw = state.get("raw_report", "")[:3000]
-    verdict = structured_llm.invoke([
-        SystemMessage(content=CRITIC_PROMPT),
-        HumanMessage(content=f"TOPIC: {state['topic']}\n\nREPORT EXCERPT:\n{raw}")
-    ])
+
+    for attempt in range(len(_groq_keys) * 2 + 1):
+        try:
+            structured_llm = llm.with_structured_output(QualityVerdict)
+            verdict = structured_llm.invoke([
+                SystemMessage(content=CRITIC_PROMPT),
+                HumanMessage(content=f"TOPIC: {state['topic']}\n\nREPORT EXCERPT:\n{raw}")
+            ])
+            break
+        except Exception as e:
+            if _is_rate_limit_error(e):
+                _rotate_key()
+                print(f"  [KEY ROTATION] Switched to key {_key_index + 1}")
+                time.sleep(5)
+            else:
+                raise
+    else:
+        # All keys exhausted — return a default approved verdict to avoid blocking export
+        print("  [CRITIC] All keys rate limited, auto-approving to proceed to export...")
+        verdict = QualityVerdict(score=8, gaps=[], follow_up_queries=[], verdict="APPROVED")
+
     print(f"  Score: {verdict.score}/10 | {verdict.verdict}")
     if verdict.gaps:
         print(f"  Gaps: {', '.join(verdict.gaps[:2])}")

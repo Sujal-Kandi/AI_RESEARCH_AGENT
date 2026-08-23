@@ -1,4 +1,5 @@
 from pydantic import BaseModel, EmailStr, field_validator
+from datetime import datetime
 import re
 
 
@@ -41,3 +42,10 @@ class UserData(BaseModel):
     username: str
     email: str
     tenant_id: str
+
+
+class ReportHistory(BaseModel):
+    id: str
+    topic: str
+    filename: str
+    created_at: datetime

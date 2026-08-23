@@ -8,6 +8,8 @@ pydantic[email]
 email-validator
 requests
 fpdf2
+psycopg2-binary
+slowapi
 langchain
 langchain-community
 langchain-groq
