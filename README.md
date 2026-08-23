@@ -120,6 +120,9 @@ After the architect writes the report, a second agent reads a preview of each se
 **Hallucination Firewall**
 During crawling, every source gets a numbered ID. The LLM can only cite IDs from that list. The factcheck node scans every citation in the report and flags any ID not present in the real crawled index, making hallucinated citations visible. This is a structural solution to hallucination — the LLM is constrained by the source index at write time, not just checked after the fact.
 
+**Fewer, Deeper Sections Written in Parallel**
+Sections are written concurrently (3 at a time) rather than one after another, cutting the architect stage from ~5-7 minutes to ~2. Because concurrent writers can't read each other's output, every section prompt lists the other section titles so scope stays disjoint. The section count is 5 rather than 7 with a higher per-section word floor — the same total depth in fewer LLM calls, which also keeps the run under free-tier rate limits.
+
 **Section-by-Section Writing**
 Using structured output (JSON schema) for long-form writing causes LLMs to write minimally to satisfy the schema. Instead, the architect generates a topic-specific section plan first, then writes each section in a dedicated LLM call as free-form prose (like a journalist), and finally assembles the full document. This produces significantly richer content than a single structured call.
 
@@ -162,6 +165,20 @@ GROQ_API_KEY_2=your_second_groq_key       # optional, for rotation
 TOGETHER_API_KEY=your_together_key         # optional, fallback provider
 ```
 
+Optional tuning (defaults shown):
+```
+SECTION_COUNT=5            # sections per report
+SECTION_WORKERS=3          # sections written concurrently
+SECTION_MIN_WORDS=600      # target words per section (evidence decides the real length)
+STRIP_UNVERIFIED=1         # delete sentences whose figures no source supports
+MAX_STRIP_RATIO=0.4        # never delete more than this share of a paragraph
+```
+
+Grounding: each section is given its own ranked subset of the crawled sources (official
+and primary domains outrank blogs), and the fact-check pass checks the numbers in each
+sentence against the text of the sources it cites — not just that the `[N]` exists.
+Unsupported figures are dropped and a grounding score is printed per run.
+
 Get free API keys:
 - Tavily: [tavily.com](https://tavily.com)
 - Groq: [console.groq.com](https://console.groq.com)
@@ -196,7 +213,7 @@ python agent.py "NVIDIA H100 vs A100 Architecture"
 The agent will:
 1. Plan search queries and pause for your approval
 2. Crawl 50+ sources and deep-fetch content
-3. Write a 7-section report with timelines, tables, and critical analysis
+3. Write a 5-section report (written in parallel) with timelines, tables, and critical analysis
 4. Challenge and rewrite its 2 weakest sections
 5. Score quality and loop if needed
 6. Export a PDF to the current directory

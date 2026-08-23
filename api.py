@@ -204,6 +204,7 @@ def plan_research(
                 "research_rounds": state["research_rounds"],
                 "source_index": state["source_index"],
                 "source_titles": state["source_titles"],
+                "source_texts": state["source_texts"],
                 "memory_context": state["memory_context"],
             },
         })
@@ -311,7 +312,7 @@ def _run_pipeline(session_id: str, username: str):
             state.update(result)
 
         update("factcheck", 80)
-        factcheck_node(state)
+        state.update(factcheck_node(state))
 
         update("critic", 88)
         state.update(critic_node(state))
@@ -324,7 +325,7 @@ def _run_pipeline(session_id: str, username: str):
             update("architect_2", 94)
             state.update(architect_node(state))
             update("factcheck_2", 96)
-            factcheck_node(state)
+            state.update(factcheck_node(state))
             update("critic_2", 97)
             state.update(critic_node(state))
 
