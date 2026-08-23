@@ -950,8 +950,37 @@ async function pollStatus() {
   } catch(e) { clearInterval(pollTimer); agentError(e.message); }
 }
 
-function viewPDF()     { window.open(`/research/result/${sessionId}`, '_blank'); }
-function downloadPDF() { window.location.href = `/research/download/${sessionId}`; }
+/* The PDF routes take a bearer token, and a plain navigation cannot send one,
+   so fetch the bytes and hand the browser a blob URL instead. */
+async function fetchPDF(path) {
+  const res = await fetch(path, { headers: { 'Authorization': `Bearer ${getToken()}` } });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch(e) {}
+    throw new Error(detail);
+  }
+  const disp = res.headers.get('Content-Disposition') || '';
+  const match = disp.match(/filename="([^"]+)"/);
+  return { url: URL.createObjectURL(await res.blob()), name: match ? match[1] : 'report.pdf' };
+}
+
+async function viewPDF() {
+  try {
+    const { url } = await fetchPDF(`/research/result/${sessionId}`);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch(e) { agentError(`Could not open PDF: ${e.message}`); }
+}
+
+async function downloadPDF() {
+  try {
+    const { url, name } = await fetchPDF(`/research/download/${sessionId}`);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch(e) { agentError(`Could not download PDF: ${e.message}`); }
+}
 
 function agentError(msg) {
   const el = $('step-error');

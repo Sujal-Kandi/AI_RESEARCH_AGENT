@@ -1,9 +1,12 @@
 import io
 import os
+import re
 import threading
+import unicodedata
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 import uvicorn
@@ -140,8 +143,20 @@ async def download_history_report(
     return StreamingResponse(
         io.BytesIO(bytes(row["pdf_bytes"])),
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=\"{row['filename']}\""},
+        headers=pdf_headers(row["filename"]),
     )
+
+
+def pdf_headers(filename: str, disposition: str = "attachment") -> dict:
+    """Content-Disposition that survives non-ASCII filenames (RFC 5987)."""
+    ascii_name = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode()
+    ascii_name = re.sub(r'[^A-Za-z0-9._-]', "_", ascii_name) or "report.pdf"
+    quoted = quote(filename)
+    return {
+        "Content-Disposition": (
+            f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+        )
+    }
 
 
 app.include_router(router)
@@ -394,7 +409,7 @@ def get_result(
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": f"inline; filename=\"{filename}\""},
+        headers=pdf_headers(filename, "inline"),
     )
 
 
@@ -416,7 +431,7 @@ def download_result(
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
+        headers=pdf_headers(filename),
     )
 
 

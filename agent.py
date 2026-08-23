@@ -943,6 +943,16 @@ def sanitize(text: str) -> str:
     }
     for k, v in replacements.items():
         text = text.replace(k, v)
+    # Models emit narrow/no-break spaces and non-breaking hyphens. latin-1 drops
+    # them silently, which glues words together ("$3.447billion", "Form10K"), so
+    # map every space-like and dash-like codepoint onto its ASCII equivalent.
+    import unicodedata
+    text = "".join(
+        " " if unicodedata.category(c) == "Zs"
+        else "-" if unicodedata.category(c) == "Pd"
+        else c
+        for c in text
+    )
     return text.encode("latin-1", errors="ignore").decode("latin-1")
 
 def draw_line(pdf, w, r=180, g=180, b=180):
@@ -1127,8 +1137,11 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
     pdf.set_fill_color(20, 20, 20)
     pdf.rect(0, 287, 210, 10, "F")
 
-    filename = f"REPORT_{title[:35].replace(' ', '_').upper()}.pdf"
-    filename = "".join(c for c in filename if c not in r'\/:*?"<>|')
+    # Titles come from the model, so they carry curly quotes and dashes. Those
+    # cannot go in a Content-Disposition header, so fold to plain ASCII here.
+    stem = sanitize(title[:35]).replace(" ", "_").upper()
+    stem = re.sub(r"[^A-Z0-9_-]", "", stem).strip("_") or "REPORT"
+    filename = f"REPORT_{stem}.pdf"
     pdf.output(filename)
     print(f"\n[EXPORTED] {filename} | {len(section_blocks)} sections | {len(source_index)} sources")
     return filename
