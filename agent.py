@@ -427,7 +427,7 @@ def source_tier(url: str) -> int:
 # run concurrently. IDs are still assigned in query order afterwards, which
 # keeps citation numbers stable regardless of which request finishes first.
 CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "5"))
-DEEP_FETCH_LIMIT = int(os.getenv("DEEP_FETCH_LIMIT", "5"))
+DEEP_FETCH_LIMIT = int(os.getenv("DEEP_FETCH_LIMIT", "12"))
 
 def emit(state, stage: str, detail: str = "", done=None, total=None):
     """Report real pipeline progress to whoever is watching (the API, the CLI).
@@ -505,7 +505,7 @@ def crawler_node(state: AgentState):
         emit(state, "crawler", "Reading top sources", 0, len(to_fetch))
         done_fetch = 0
         with ThreadPoolExecutor(max_workers=len(to_fetch)) as pool:
-            futures = {pool.submit(deep_fetch, s[1], 2000): s[0] for s in to_fetch}
+            futures = {pool.submit(deep_fetch, s[1], 4000): s[0] for s in to_fetch}
             for fut in as_completed(futures):
                 fetched[futures[fut]] = fut.result()
                 done_fetch += 1
@@ -565,24 +565,47 @@ SLOP_PHRASES = (
     "as we look to the future",
 )
 
-SECTION_COUNT = int(os.getenv("SECTION_COUNT", "5"))
-SECTION_WORKERS = int(os.getenv("SECTION_WORKERS", "3"))
+SECTION_WORKERS = int(os.getenv("SECTION_WORKERS", "4"))
 SECTION_MIN_WORDS = int(os.getenv("SECTION_MIN_WORDS", "600"))
+SECTION_MIN = int(os.getenv("SECTION_MIN", "3"))
+SECTION_MAX = int(os.getenv("SECTION_MAX", "9"))
+# Roughly how much usable crawled text one dense section needs behind it.
+EVIDENCE_PER_SECTION = int(os.getenv("EVIDENCE_PER_SECTION", "9000"))
+# Set SECTION_COUNT to pin the report shape; unset, it follows the evidence.
+SECTION_COUNT_OVERRIDE = os.getenv("SECTION_COUNT")
 
-def generate_section_topics(topic: str, raw_data: str) -> List[str]:
+def plan_section_count(source_texts: Dict[int, str]) -> int:
+    """Decide how many sections the crawled evidence can actually fill.
+
+    A narrow question that returned three usable pages gets a short report; a
+    broad one with plenty of full-text sources gets a long one. Only sources
+    with real body text count, so a pile of 200-char search snippets cannot
+    inflate the report into padding.
+    """
+    if SECTION_COUNT_OVERRIDE:
+        return max(1, int(SECTION_COUNT_OVERRIDE))
+    substantial = [t for t in source_texts.values() if len(t or "") > 600]
+    usable_chars = sum(len(t) for t in substantial)
+    return max(SECTION_MIN, min(SECTION_MAX, usable_chars // EVIDENCE_PER_SECTION))
+
+def generate_section_topics(topic: str, raw_data: str, count: int) -> List[str]:
     """Ask the LLM to propose section titles tailored to the research topic."""
+    shape = (
+        "- One section MUST be a timeline of key events (title it like \"Timeline: [Topic] from [Year] to [Year]\")\n"
+        "- One section MUST be a contrarian/critical analysis (title it like \"The Contrarian View: Was Failure Inevitable?\" or similar)"
+    )
+    if count >= 5:
+        shape += "\n- One section MUST be a comparison (title it like \"Comparative Analysis: [A] vs [B]\" or similar)"
     prompt = f"""You are planning a long-form research report on: "{topic}"
 
-Based on this topic, propose exactly {SECTION_COUNT} section titles that together give comprehensive coverage.
+Based on this topic, propose exactly {count} section titles that together give comprehensive coverage.
 Rules:
 - Each title must be specific and distinct — no overlap
 - Each section must be broad enough to carry {SECTION_MIN_WORDS}+ words of dense analysis on its own
-- One section MUST be a timeline of key events (title it like "Timeline: [Topic] from [Year] to [Year]")
-- One section MUST be a contrarian/critical analysis (title it like "The Contrarian View: Was Failure Inevitable?" or similar)
-- One section MUST be a comparison (title it like "Comparative Analysis: [A] vs [B]" or similar)
+{shape}
 - Merge narrow angles (origins, peak, decline, legacy) into fewer, deeper sections rather than splitting them
-Return ONLY a Python list of strings, nothing else. Example:
-["Title One", "Title Two", "Title Three", "Title Four", "Title Five"]"""
+Return ONLY a Python list of {count} strings, nothing else. Example:
+["Title One", "Title Two", "Title Three"]"""
     try:
         response = llm_invoke_with_rotation([HumanMessage(content=prompt)]).content.strip()
         import ast, re
@@ -590,17 +613,21 @@ Return ONLY a Python list of strings, nothing else. Example:
         if match:
             titles = [t for t in ast.literal_eval(match.group()) if isinstance(t, str) and t.strip()]
             if titles:
-                return titles[:SECTION_COUNT]
+                return titles[:count]
     except Exception:
         pass
     # Fallback generic sections
     return [
         "Origins, Peak Dominance, and the Foundations of Later Failure",
         "Timeline: Key Events and Turning Points",
+        "The Contrarian View: Was Failure Inevitable?",
         "Disruption and Strategic Missteps",
         "Comparative Analysis: Key Competitors vs Subject",
-        "The Contrarian View: Was Failure Inevitable?",
-    ][:SECTION_COUNT]
+        "Mechanics: How the Decisive Changes Actually Worked",
+        "Stakeholders: Who Gained, Who Lost, and by How Much",
+        "Counterfactuals the Evidence Supports",
+        "Legacy and Measurable Aftermath",
+    ][:count]
 
 STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "from", "with",
@@ -614,7 +641,7 @@ def _keywords(text: str) -> List[str]:
 
 def select_sources(section_title: str, topic: str, source_texts: Dict[int, str],
                    source_titles: Dict[int, str], source_index: Dict[int, str],
-                   limit: int = 10) -> List[int]:
+                   limit: int = 12) -> List[int]:
     """Rank sources by term overlap with the section title, then by source tier.
 
     Each section gets its own evidence subset, so parallel sections stop
@@ -631,9 +658,39 @@ def select_sources(section_title: str, topic: str, source_texts: Dict[int, str],
     scored.sort()
     return [sid for _, sid in scored[:limit]]
 
+def allocate_sources(section_titles: List[str], topic: str, source_texts: Dict[int, str],
+                     source_titles: Dict[int, str], source_index: Dict[int, str],
+                     limit: int = 12) -> Dict[int, List[int]]:
+    """Hand each section its own sources, sharing only once the pool runs out.
+
+    Ranking sections independently gave them near-identical top sources, so
+    every section retold the same handful of facts. Claiming sources in
+    round-robin order keeps each section's best match while forcing the others
+    onto material nobody has used yet.
+    """
+    ranked = {
+        i: select_sources(t, topic, source_texts, source_titles, source_index,
+                          limit=limit * 3)
+        for i, t in enumerate(section_titles)
+    }
+    picks: Dict[int, List[int]] = {i: [] for i in ranked}
+    claimed: set = set()
+    for _ in range(limit):
+        for i, order in ranked.items():
+            candidate = next(
+                (s for s in order if s not in claimed and s not in picks[i]),
+                None,
+            )
+            if candidate is None:
+                candidate = next((s for s in order if s not in picks[i]), None)
+            if candidate is not None:
+                picks[i].append(candidate)
+                claimed.add(candidate)
+    return picks
+
 def build_evidence_block(sids: List[int], source_index: Dict[int, str],
                          source_titles: Dict[int, str], source_texts: Dict[int, str],
-                         chars_per_source: int = 1200) -> str:
+                         chars_per_source: int = 1500) -> str:
     return "\n\n".join(
         f"[{sid}] {source_index.get(sid, '')} - \"{source_titles.get(sid, '')}\"\n"
         f"{(source_texts.get(sid) or '')[:chars_per_source]}"
@@ -723,7 +780,12 @@ Write ONLY the following three parts, nothing else:
 
     # Step 2: Write each section independently, in parallel
     emit(state, "architect", "Planning report sections")
-    section_topics = generate_section_topics(topic, raw)
+    count = plan_section_count(source_texts)
+    section_topics = generate_section_topics(topic, raw, count)
+    print(f"  Evidence supports {len(section_topics)} sections")
+    section_sources = allocate_sources(
+        section_topics, topic, source_texts, source_titles, source_index
+    )
 
     def write_section(index_and_title):
         i, sec_title = index_and_title
@@ -732,7 +794,7 @@ Write ONLY the following three parts, nothing else:
         other_titles = "\n".join(
             f"- {t}" for j, t in enumerate(section_topics) if j != i
         )
-        sids = select_sources(sec_title, topic, source_texts, source_titles, source_index)
+        sids = section_sources[i]
         evidence = build_evidence_block(sids, source_index, source_titles, source_texts)
         print(f"  Writing section {i + 1}/{len(section_topics)}: {sec_title} "
               f"(sources {', '.join(str(s) for s in sids)})...")
@@ -749,6 +811,9 @@ Write ONLY this one section. Do not write any other sections.
 
 OTHER SECTIONS IN THIS REPORT (written separately — do NOT cover their ground):
 {other_titles}
+
+An event that belongs to another section's subject is theirs to narrate. If you need it,
+refer to it in a single clause and move on — never re-tell it.
 
 How to write it:
 - Ground every claim in the EVIDENCE above and cite it inline as [N]. A sentence with a
@@ -1204,6 +1269,9 @@ def _rewrite_one(topic, sec_title, challenge_text, existing_body,
         SystemMessage(content=(
             "You are rewriting one section of a research report to fix a specific weakness. "
             "Keep every fact that the evidence supports and drop the ones it does not. "
+            "The rewrite must be at least as long as the existing content: fix it by adding "
+            "mechanism, causes and consequences from the evidence, not by cutting material. "
+            "Deleting a supported fact to shorten the section is a failure. "
             "Add no figure, date, or name that is absent from the evidence below. "
             f"Never use these filler phrases: {', '.join(SLOP_PHRASES)}. "
             "No closing summary. Cite sources inline as [N]. No bullet points. Flowing prose only."
@@ -1223,7 +1291,14 @@ SPECIFIC CHALLENGE TO ADDRESS:
 
 Rewrite this section now, directly addressing the challenge:""")
     ]).content
-    return strip_slop(rewritten)
+    rewritten = strip_slop(rewritten)
+    # Rewrites were coming back as summaries of the original. A shorter section
+    # is only accepted when it was stripping unsupported material, which the
+    # evidence-grounded rewrite has no reason to do at this scale.
+    if len(rewritten.split()) < 0.9 * len(existing_body.split()):
+        print(f"  Rewrite shrank {sec_title[:50]}, keeping the original")
+        return existing_body
+    return rewritten
 
 
 def targeted_rewrite_node(state: AgentState):
@@ -1252,7 +1327,7 @@ def targeted_rewrite_node(state: AgentState):
             print(f"  Section not found in report, skipping: {sec_title[:60]}")
             continue
         print(f"  Rewriting: {sec_title[:60]} ({challenge.problem})")
-        jobs.append((sec_match, sec_title, challenge.challenge, sec_match.group(2).strip()[:1500]))
+        jobs.append((sec_match, sec_title, challenge.challenge, sec_match.group(2).strip()))
 
     if not jobs:
         return {}
