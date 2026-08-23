@@ -59,29 +59,24 @@ User Input (Topic)
          │                                                          │
          ▼                                                          │
 ┌─────────────────┐                                                 │
-│ SECTION         │  Reads section previews, identifies 2 weakest  │
-│ CHALLENGER      │  sections. Returns specific challenges:         │
+│     AUDIT       │  ONE call: scores the report 1-10 and names     │
+│                 │  the 2 weakest sections with a challenge each   │
 │                 │  "Safe explanation / Repetition /               │
 │                 │   Missing contrarian / No specifics"            │
 └────────┬────────┘                                                 │
          │                                                          │
          ▼                                                          │
 ┌─────────────────┐                                                 │
-│ TARGETED        │  Rewrites only the 2 challenged sections        │
-│ REWRITER        │  Fixes specific weaknesses, keeps all facts     │
+│ TARGETED        │  Rewrites only the 2 flagged sections, in       │
+│ REWRITER        │  parallel, against their own evidence           │
 └────────┬────────┘                                                 │
          │                                                          │
          ▼                                                          │
 ┌─────────────────┐                                                 │
-│   FACTCHECK     │  Checks every [N] citation against crawled      │
-│                 │  source index, flags unverified IDs             │
-└────────┬────────┘                                                 │
-         │                                                          │
-         ▼                                                          │
-┌─────────────────┐                                                 │
-│     CRITIC      │  Scores report quality 1-10                     │
-│                 │  NEEDS_MORE_RESEARCH → REFINE node              │
-│                 │  APPROVED → export (max 4 iterations)           │
+│   FACTCHECK     │  Checks each figure against the text of the     │
+│                 │  source that sentence cites; scores grounding   │
+│                 │  NEEDS_MORE_RESEARCH + low grounding → REFINE   │
+│                 │  otherwise → export                             │
 └────────┬────────┘                                                 │
          │                                                          │
       ┌──┴──┐                                                       │
@@ -114,8 +109,11 @@ User Input (Topic)
 **Why LangGraph?**
 Simple LLM chains go A→B→C with no way back. Research is iterative — sometimes you need to loop back and dig deeper. LangGraph enables conditional loops, state persistence, and human-in-the-loop checkpoints that aren't possible with basic chaining.
 
-**Section Challenger + Targeted Rewriter**
-After the architect writes the report, a second agent reads a preview of each section and identifies the 2 weakest ones — flagging problems like "safe explanation with no critical judgment", "repetition of a point from another section", "missing contrarian angle", or "no specifics (claims without hard numbers or dates)". A targeted rewriter then fixes only those sections. This is a lightweight debate loop that adds analytical depth at minimal token cost (3 extra LLM calls vs 21 for a full debate).
+**Audit + Targeted Rewriter**
+One audit call both scores the report and names its 2 weakest sections — flagging "safe explanation with no critical judgment", "repetition of a point from another section", "missing contrarian angle", or "no specifics (claims without hard numbers or dates)". A targeted rewriter then fixes only those sections, both at once. Scoring and triage used to be two serial calls over the same text; merging them and parallelising the rewrites removes three round trips from every run.
+
+**Refine loop only when it is worth it**
+A refine pass re-crawls and rewrites the whole report (~7 more LLM calls), so it now runs only when the critic asks for more research *and* the measured grounding is below `REFINE_GROUNDING_FLOOR`. A report that is already well-sourced exports immediately.
 
 **Hallucination Firewall**
 During crawling, every source gets a numbered ID. The LLM can only cite IDs from that list. The factcheck node scans every citation in the report and flags any ID not present in the real crawled index, making hallucinated citations visible. This is a structural solution to hallucination — the LLM is constrained by the source index at write time, not just checked after the fact.
@@ -139,8 +137,8 @@ Every completed research run is chunked and stored in ChromaDB. Future runs on r
 - Multi-agent pipeline with 7 specialized nodes
 - Web UI with real-time progress tracking (FastAPI + vanilla JS)
 - REST API for programmatic access
-- Section challenger that debates its own output
-- Self-correcting quality loop (critic scores 1-10, loops until 8+)
+- Single-call audit that scores the report and triages its weakest sections
+- Self-correcting quality loop, skipped when grounding is already high
 - Human-in-the-loop approval checkpoint (remove queries before starting)
 - Grounded citations — every claim tied to a real crawled URL
 - Hallucination detection and removal
@@ -172,6 +170,8 @@ SECTION_WORKERS=3          # sections written concurrently
 SECTION_MIN_WORDS=600      # target words per section (evidence decides the real length)
 STRIP_UNVERIFIED=1         # delete sentences whose figures no source supports
 MAX_STRIP_RATIO=0.4        # never delete more than this share of a paragraph
+REFINE_GROUNDING_FLOOR=0.75 # skip the refine loop when grounding is at least this
+MAX_REFINE_ITERATIONS=2    # hard cap on refine rounds
 KEY_COOLDOWN_SECONDS=60    # how long a rate-limited key is skipped for
 MAX_RATE_LIMIT_WAIT=90     # longest wait for a cooling key before trying Together.ai
 MAX_TOTAL_RATE_LIMIT_WAIT=300  # total waiting budget for one LLM call
@@ -223,8 +223,8 @@ The agent will:
 1. Plan search queries and pause for your approval
 2. Crawl 50+ sources and deep-fetch content
 3. Write a 5-section report (written in parallel) with timelines, tables, and critical analysis
-4. Challenge and rewrite its 2 weakest sections
-5. Score quality and loop if needed
+4. Score the report and rewrite its 2 weakest sections in parallel
+5. Verify figures against source text, looping for more research only if grounding is low
 6. Export a PDF to the current directory
 
 ### REST API

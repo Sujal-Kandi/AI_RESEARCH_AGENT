@@ -131,6 +131,14 @@ def _retry_after_seconds(error: Exception) -> float:
     seconds = value / 1000 if unit == "ms" else value * 60 if unit == "m" else value
     return min(max(seconds, 1.0), 600.0)
 
+def _structured_invoke(schema, messages):
+    """Structured-output call that shares the rotation/backoff path. None if exhausted."""
+    _init_llm()
+    try:
+        return llm_invoke_with_rotation(messages, structured_output=schema)
+    except RateLimitExhausted:
+        return None
+
 def _current_client():
     """Snapshot the active client and the generation it belongs to."""
     with _llm_lock:
@@ -188,7 +196,7 @@ def _advance_key(failed_generation: int, error: Exception = None):
         _llm_generation += 1
         return 2.0
 
-def llm_invoke_with_rotation(messages):
+def llm_invoke_with_rotation(messages, structured_output=None):
     """Invoke LLM, rotating Groq keys on rate limit, then falling back to Together.ai.
 
     Safe to call from multiple threads: only rotation touches shared state, and
@@ -200,6 +208,8 @@ def llm_invoke_with_rotation(messages):
     while True:
         client, generation = _current_client()
         try:
+            if structured_output is not None:
+                return client.with_structured_output(structured_output).invoke(messages)
             return client.invoke(messages)
         except Exception as e:
             if not _is_rate_limit_error(e):
@@ -269,6 +279,11 @@ class FinalDossier(BaseModel):
         )
     )
 
+class SectionChallenge(BaseModel):
+    section: str = Field(description="Exact title of the weak section, copied verbatim.")
+    problem: str = Field(description="One of: Safe explanation, Repetition, Missing contrarian, No specifics.")
+    challenge: str = Field(description="One sharp question or missing angle the rewrite must address.")
+
 class QualityVerdict(BaseModel):
     score: int = Field(description="Quality score 1-10. 8+ means publish-ready.")
     gaps: List[str] = Field(default_factory=list, description="Specific missing data points. Empty list if none.")
@@ -282,6 +297,13 @@ class QualityVerdict(BaseModel):
             return [v] if v.strip() else []
         return v or []
 
+class ReportAudit(QualityVerdict):
+    """Scoring and weak-section triage in one call instead of two round trips."""
+    weak_sections: List[SectionChallenge] = Field(
+        default_factory=list,
+        description="The 2 weakest sections and what each rewrite must fix. Empty if none are weak.",
+    )
+
 class AgentState(Dict):
     topic: str
     plan: ResearchPlan
@@ -292,10 +314,10 @@ class AgentState(Dict):
     source_texts: Dict[int, str]  # per-source crawled text, used for retrieval + verification
     memory_context: str
     quality: QualityVerdict
+    weak_sections: List[SectionChallenge]  # from the audit, consumed by the rewriter
     grounding: float  # share of factual sentences corroborated by source text
     iteration: int
     research_rounds: int
-    challenge_notes: str  # feedback from section_challenger for targeted rewrite
 
 # ── SYSTEM PROMPTS ─────────────────────────────────────────────────────────────
 STRATEGIST_PROMPT = """You are an elite intelligence analyst. Build a comprehensive research plan.
@@ -308,6 +330,8 @@ Generate 10-15 search queries covering:
 Every query must target a specific data point. No generic queries."""
 
 CRITIC_PROMPT = """You are a ruthless research quality auditor for a top-tier journal.
+You do two jobs in one pass: score the report, and name its 2 weakest sections.
+
 Score the report 1-10 on grounding first, style second:
 - 1-4: Claims without citations, generic filler, reads like a summary of a summary
 - 5-7: Cited but thin — few hard numbers, repeats itself across sections, hedged judgments
@@ -315,7 +339,16 @@ Score the report 1-10 on grounding first, style second:
   explained, no repetition
 Penalise heavily: numbers or dates with no citation, sentences that could appear in a report on
 any other topic, and paragraphs that restate an earlier point.
-Be harsh. Only approve (score >= 8) if a senior researcher would find it valuable."""
+Be harsh. Only approve (score >= 8) if a senior researcher would find it valuable.
+Only ask for more research when a section is missing facts no rewrite could supply.
+
+For weak_sections, return the 2 worst sections (or none if all are solid). Copy each
+section title verbatim and classify the problem as one of:
+- "Safe explanation" — describes what happened but never says why, or what it cost
+- "Repetition" — repeats a point already made in another section
+- "Missing contrarian" — accepts the obvious narrative without challenging it
+- "No specifics" — claims without hard numbers, dates, or named decisions
+Each challenge must be one sharp question the rewrite has to answer."""
 
 # ── NODES ──────────────────────────────────────────────────────────────────────
 def strategist_node(state: AgentState):
@@ -323,24 +356,16 @@ def strategist_node(state: AgentState):
     memory_context = query_memory(state["topic"])
     print(f"  Memory: {'found past research' if memory_context else 'starting fresh'}")
 
-    _init_llm()
     memory_hint = f"\n\nPAST RESEARCH (avoid re-searching these):\n{memory_context}" if memory_context else ""
 
-    for attempt in range(len(_groq_keys) * 2 + 1):
-        try:
-            structured_llm = llm.with_structured_output(ResearchPlan)
-            plan = structured_llm.invoke([
-                SystemMessage(content=STRATEGIST_PROMPT),
-                HumanMessage(content=f"Build research plan for: {state['topic']}{memory_hint}")
-            ])
-            break
-        except Exception as e:
-            if _is_rate_limit_error(e):
-                _rotate_key()
-                print(f"  [KEY ROTATION] Switched to key {_key_index + 1}")
-                time.sleep(5)
-            else:
-                raise
+    plan = _structured_invoke(ResearchPlan, [
+        SystemMessage(content=STRATEGIST_PROMPT),
+        HumanMessage(content=f"Build research plan for: {state['topic']}{memory_hint}")
+    ])
+    if plan is None:
+        raise RateLimitExhausted(
+            "All API keys are currently rate limited. Please try again in 5 minutes."
+        )
     print(f"  {len(plan.queries)} queries planned")
     return {
         "plan": plan,
@@ -826,35 +851,42 @@ def factcheck_node(state: AgentState):
 
     return {"raw_report": cleaned, "grounding": stats["grounding"]}
 
-def critic_node(state: AgentState):
+def audit_node(state: AgentState):
+    """Score the report and name its weakest sections in a single LLM call.
+
+    This used to be two serial round trips (challenger, then critic) over the
+    same text; the model was reading the report twice to answer two questions.
+    """
     iteration = state.get("iteration", 1)
-    print(f"\n[CRITIC] Quality audit - iteration {iteration}...")
-    raw = state.get("raw_report", "")[:3000]
+    print(f"\n[AUDIT] Scoring report and triaging weak sections - iteration {iteration}...")
+    raw = state.get("raw_report", "")
 
-    for attempt in range(len(_groq_keys) * 2 + 1):
-        try:
-            structured_llm = llm.with_structured_output(QualityVerdict)
-            verdict = structured_llm.invoke([
-                SystemMessage(content=CRITIC_PROMPT),
-                HumanMessage(content=f"TOPIC: {state['topic']}\n\nREPORT EXCERPT:\n{raw}")
-            ])
-            break
-        except Exception as e:
-            if _is_rate_limit_error(e):
-                _rotate_key()
-                print(f"  [KEY ROTATION] Switched to key {_key_index + 1}")
-                time.sleep(5)
-            else:
-                raise
-    else:
-        # All keys exhausted — return a default approved verdict to avoid blocking export
-        print("  [CRITIC] All keys rate limited, auto-approving to proceed to export...")
-        verdict = QualityVerdict(score=8, gaps=[], follow_up_queries=[], verdict="APPROVED")
+    import re
+    sections = re.findall(r'##\s+SECTION:\s*(.+?)\n(.{0,300})', raw, re.DOTALL)
+    preview = "\n\n".join(
+        f"SECTION: {title.strip()}\n{body.strip()[:300]}" for title, body in sections
+    ) or raw[:3000]
 
-    print(f"  Score: {verdict.score}/10 | {verdict.verdict}")
-    if verdict.gaps:
-        print(f"  Gaps: {', '.join(verdict.gaps[:2])}")
-    return {"quality": verdict, "iteration": iteration + 1}
+    audit = _structured_invoke(ReportAudit, [
+        SystemMessage(content=CRITIC_PROMPT),
+        HumanMessage(content=f"TOPIC: {state['topic']}\n\nREPORT SECTIONS:\n{preview}")
+    ])
+    if audit is None:
+        # All keys rate limited — approve rather than block the export.
+        print("  [AUDIT] All keys rate limited, auto-approving to proceed to export...")
+        audit = ReportAudit(score=8, gaps=[], follow_up_queries=[], verdict="APPROVED")
+
+    print(f"  Score: {audit.score}/10 | {audit.verdict}")
+    if audit.gaps:
+        print(f"  Gaps: {', '.join(audit.gaps[:2])}")
+    for weak in audit.weak_sections[:2]:
+        print(f"  Weak: {weak.section[:60]} — {weak.problem}")
+
+    return {
+        "quality": audit,
+        "weak_sections": audit.weak_sections[:2],
+        "iteration": iteration + 1,
+    }
 
 def refine_node(state: AgentState):
     verdict = state["quality"]
@@ -866,12 +898,27 @@ def refine_node(state: AgentState):
         )
     }
 
+# A refine pass re-runs the crawler and the whole architect (~7 more LLM calls),
+# so it is only worth it when the report is genuinely thin — not merely when a
+# harsh critic asks for more.
+REFINE_GROUNDING_FLOOR = float(os.getenv("REFINE_GROUNDING_FLOOR", "0.75"))
+MAX_REFINE_ITERATIONS = int(os.getenv("MAX_REFINE_ITERATIONS", "2"))
+
 def should_refine(state: AgentState) -> str:
     verdict = state.get("quality")
     iteration = state.get("iteration", 1)
-    if verdict and verdict.verdict == "NEEDS_MORE_RESEARCH" and iteration <= 4:
-        return "refine"
-    return "export"
+    grounding = state.get("grounding", 0.0)
+
+    if not verdict or verdict.verdict != "NEEDS_MORE_RESEARCH":
+        return "export"
+    if iteration > MAX_REFINE_ITERATIONS:
+        return "export"
+    if grounding >= REFINE_GROUNDING_FLOOR:
+        print(f"  [REFINE SKIPPED] Grounding {grounding:.0%} is already solid; exporting.")
+        return "export"
+    if not verdict.follow_up_queries:
+        return "export"
+    return "refine"
 
 # ── PDF HELPERS ────────────────────────────────────────────────────────────────
 def sanitize(text: str) -> str:
@@ -1072,105 +1119,21 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
     print(f"\n[EXPORTED] {filename} | {len(section_blocks)} sections | {len(source_index)} sources")
     return filename
 
-CHALLENGER_PROMPT = """You are a sharp editorial critic reviewing a research report before publication.
-Your job: find the 2 weakest sections and return specific, actionable challenges.
+def _rewrite_one(topic, sec_title, challenge_text, existing_body,
+                 source_index, source_titles, source_texts):
+    """Rewrite a single section against its own evidence. Runs in a worker thread."""
+    sids = select_sources(sec_title, topic, source_texts, source_titles, source_index)
+    evidence = build_evidence_block(sids, source_index, source_titles, source_texts)
 
-For each weak section, identify ONE of these problems:
-- "Safe explanation" — describes what happened but never says why it was wrong or what better alternative existed
-- "Repetition" — repeats a point already made in another section
-- "Missing contrarian" — accepts the obvious narrative without challenging it
-- "No specifics" — makes claims without hard numbers, dates, or named decisions
-
-Be surgical. Return exactly 2 challenges, each targeting a specific section by its title.
-Format strictly as:
-SECTION: [exact section title]
-PROBLEM: [one of the 4 problem types above]
-CHALLENGE: [one sharp question or missing angle the rewrite must address]
----
-SECTION: [exact section title]
-PROBLEM: [one of the 4 problem types above]
-CHALLENGE: [one sharp question or missing angle the rewrite must address]"""
-
-def section_challenger_node(state: AgentState):
-    print("\n[CHALLENGER] Identifying weak sections...")
-    raw = state.get("raw_report", "")
-
-    # Extract just section titles + first 300 chars of each for efficiency
-    import re
-    sections = re.findall(r'##\s+SECTION:\s*(.+?)\n(.{0,300})', raw, re.DOTALL)
-    if not sections:
-        print("  No sections found, skipping challenge.")
-        return {"challenge_notes": ""}
-
-    preview = "\n\n".join(
-        f"SECTION: {title.strip()}\n{body.strip()[:300]}"
-        for title, body in sections
-    )
-
-    response = llm_invoke_with_rotation([
-        SystemMessage(content=CHALLENGER_PROMPT),
-        HumanMessage(content=f"TOPIC: {state['topic']}\n\nREPORT SECTIONS PREVIEW:\n{preview}")
-    ])
-
-    notes = response.content.strip()
-    print(f"  Challenges identified:\n{notes[:300]}...")
-    return {"challenge_notes": notes}
-
-
-def targeted_rewrite_node(state: AgentState):
-    print("\n[REWRITER] Fixing challenged sections...")
-    notes = state.get("challenge_notes", "")
-    if not notes:
-        print("  No challenges to address, skipping.")
-        return {}
-
-    import re
-    raw = state.get("raw_report", "")
-
-    # Parse challenged section titles from notes
-    challenged = re.findall(r'SECTION:\s*(.+)', notes)
-    if not challenged:
-        return {}
-
-    source_index = {int(k): v for k, v in state["source_index"].items()}
-    source_titles = {int(k): v for k, v in (state.get("source_titles") or {}).items()}
-    source_texts = {int(k): v for k, v in (state.get("source_texts") or {}).items()}
-
-    updated_report = raw
-    for sec_title in challenged[:2]:  # max 2 rewrites
-        sec_title = sec_title.strip()
-        # Find the challenge note for this section
-        challenge_match = re.search(
-            rf'SECTION:\s*{re.escape(sec_title)}.*?CHALLENGE:\s*(.+?)(?=---|$)',
-            notes, re.DOTALL
-        )
-        challenge_text = challenge_match.group(1).strip() if challenge_match else "Add critical analysis and contrarian perspective."
-
-        print(f"  Rewriting: {sec_title[:60]}...")
-        print(f"  Challenge: {challenge_text[:100]}")
-
-        # Find existing section content
-        sec_match = re.search(
-            rf'(##\s+SECTION:\s*{re.escape(sec_title)}\n)(.*?)(?=\n##\s+SECTION:|\n##\s+SYNTHESIS|\Z)',
-            updated_report, re.DOTALL
-        )
-        if not sec_match:
-            print(f"  Section not found in report, skipping.")
-            continue
-
-        existing_body = sec_match.group(2).strip()[:1500]
-        sids = select_sources(sec_title, state["topic"], source_texts, source_titles, source_index)
-        evidence = build_evidence_block(sids, source_index, source_titles, source_texts)
-
-        rewritten = llm_invoke_with_rotation([
-            SystemMessage(content=(
-                "You are rewriting one section of a research report to fix a specific weakness. "
-                "Keep every fact that the evidence supports and drop the ones it does not. "
-                "Add no figure, date, or name that is absent from the evidence below. "
-                f"Never use these filler phrases: {', '.join(SLOP_PHRASES)}. "
-                "No closing summary. Cite sources inline as [N]. No bullet points. Flowing prose only."
-            )),
-            HumanMessage(content=f"""TOPIC: {state['topic']}
+    rewritten = llm_invoke_with_rotation([
+        SystemMessage(content=(
+            "You are rewriting one section of a research report to fix a specific weakness. "
+            "Keep every fact that the evidence supports and drop the ones it does not. "
+            "Add no figure, date, or name that is absent from the evidence below. "
+            f"Never use these filler phrases: {', '.join(SLOP_PHRASES)}. "
+            "No closing summary. Cite sources inline as [N]. No bullet points. Flowing prose only."
+        )),
+        HumanMessage(content=f"""TOPIC: {topic}
 
 EVIDENCE (the only material you may draw facts from):
 {evidence}
@@ -1184,16 +1147,62 @@ SPECIFIC CHALLENGE TO ADDRESS:
 {challenge_text}
 
 Rewrite this section now, directly addressing the challenge:""")
-        ]).content
-        rewritten = strip_slop(rewritten)
+    ]).content
+    return strip_slop(rewritten)
 
-        # Replace old section body with rewritten version
-        updated_report = updated_report[:sec_match.start(2)] + "\n" + rewritten + "\n" + updated_report[sec_match.end(2):]
-        time.sleep(3)
 
-    print(f"  Rewrite complete. {len(challenged[:2])} section(s) improved.")
+def targeted_rewrite_node(state: AgentState):
+    print("\n[REWRITER] Fixing challenged sections...")
+    weak = state.get("weak_sections") or []
+    if not weak:
+        print("  No weak sections flagged, skipping.")
+        return {}
 
-    # Save updated report to debug file
+    import re
+    raw = state.get("raw_report", "")
+    source_index = {int(k): v for k, v in state["source_index"].items()}
+    source_titles = {int(k): v for k, v in (state.get("source_titles") or {}).items()}
+    source_texts = {int(k): v for k, v in (state.get("source_texts") or {}).items()}
+
+    # Locate each flagged section first, so the rewrites themselves can run
+    # concurrently instead of editing the report one after another.
+    jobs = []
+    for challenge in weak[:2]:
+        sec_title = challenge.section.strip()
+        sec_match = re.search(
+            rf'(##\s+SECTION:\s*{re.escape(sec_title)}\n)(.*?)(?=\n##\s+SECTION:|\n##\s+SYNTHESIS|\Z)',
+            raw, re.DOTALL
+        )
+        if not sec_match:
+            print(f"  Section not found in report, skipping: {sec_title[:60]}")
+            continue
+        print(f"  Rewriting: {sec_title[:60]} ({challenge.problem})")
+        jobs.append((sec_match, sec_title, challenge.challenge, sec_match.group(2).strip()[:1500]))
+
+    if not jobs:
+        return {}
+
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        rewrites = list(pool.map(
+            lambda job: _rewrite_one(
+                state["topic"], job[1], job[2], job[3],
+                source_index, source_titles, source_texts,
+            ),
+            jobs,
+        ))
+
+    # Splice back-to-front so earlier match offsets stay valid.
+    updated_report = raw
+    for (sec_match, _, _, _), rewritten in sorted(
+        zip(jobs, rewrites), key=lambda pair: pair[0][0].start(2), reverse=True
+    ):
+        updated_report = (
+            updated_report[:sec_match.start(2)] + "\n" + rewritten + "\n"
+            + updated_report[sec_match.end(2):]
+        )
+
+    print(f"  Rewrite complete. {len(jobs)} section(s) improved.")
+
     with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
         f.write(updated_report)
 
@@ -1206,21 +1215,19 @@ builder.add_node("strategist",          strategist_node)
 builder.add_node("commander_review",    hitl_node)
 builder.add_node("crawler",             crawler_node)
 builder.add_node("architect",           architect_node)
-builder.add_node("section_challenger",  section_challenger_node)
+builder.add_node("audit",               audit_node)
 builder.add_node("targeted_rewrite",    targeted_rewrite_node)
 builder.add_node("factcheck",           factcheck_node)
-builder.add_node("critic",              critic_node)
 builder.add_node("refine",              refine_node)
 
 builder.set_entry_point("strategist")
 builder.add_edge("strategist",         "commander_review")
 builder.add_edge("commander_review",   "crawler")
 builder.add_edge("crawler",            "architect")
-builder.add_edge("architect",          "section_challenger")
-builder.add_edge("section_challenger", "targeted_rewrite")
+builder.add_edge("architect",          "audit")
+builder.add_edge("audit",              "targeted_rewrite")
 builder.add_edge("targeted_rewrite",   "factcheck")
-builder.add_edge("factcheck",          "critic")
-builder.add_conditional_edges("critic", should_refine, {"refine": "refine", "export": END})
+builder.add_conditional_edges("factcheck", should_refine, {"refine": "refine", "export": END})
 builder.add_edge("refine",             "crawler")
 
 app = builder.compile(checkpointer=memory, interrupt_before=["commander_review"])

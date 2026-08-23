@@ -286,12 +286,11 @@ def _run_pipeline(session_id: str, username: str):
     try:
         from agent import (
             architect_node,
+            audit_node,
             crawler_node,
-            critic_node,
             export_to_pdf,
             factcheck_node,
             refine_node,
-            section_challenger_node,
             should_refine,
             targeted_rewrite_node,
         )
@@ -302,20 +301,16 @@ def _run_pipeline(session_id: str, username: str):
         update("architect", 35)
         state.update(architect_node(state))
 
-        update("section_challenger", 60)
-        state["challenge_notes"] = ""
-        state.update(section_challenger_node(state))
+        update("audit", 65)
+        state.update(audit_node(state))
 
-        update("targeted_rewrite", 70)
+        update("targeted_rewrite", 75)
         result = targeted_rewrite_node(state)
         if result:
             state.update(result)
 
-        update("factcheck", 80)
+        update("factcheck", 88)
         state.update(factcheck_node(state))
-
-        update("critic", 88)
-        state.update(critic_node(state))
 
         if should_refine(state) == "refine":
             update("refine", 90)
@@ -324,10 +319,8 @@ def _run_pipeline(session_id: str, username: str):
             state.update(crawler_node(state))
             update("architect_2", 94)
             state.update(architect_node(state))
-            update("factcheck_2", 96)
+            update("factcheck_2", 97)
             state.update(factcheck_node(state))
-            update("critic_2", 97)
-            state.update(critic_node(state))
 
         update("exporting", 98)
         pdf_path = export_to_pdf(
