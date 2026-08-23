@@ -396,6 +396,13 @@ def _run_pipeline(session_id: str, username: str):
             "detail": f"{len(state.get('source_index') or {})} sources cited",
             "step_done": None,
             "step_total": None,
+            # Audit and factcheck finish faster than the UI polls, so their
+            # numbers are carried to the result card instead of only flashing.
+            "stats": {
+                "sources": len(state.get("source_index") or {}),
+                "grounding": state.get("grounding"),
+                "score": getattr(state.get("quality"), "score", None),
+            },
             "pdf_bytes": pdf_bytes,
             "pdf_filename": pdf_filename,
         })
@@ -427,6 +434,7 @@ def get_status(
         "step_done": session.get("step_done"),
         "step_total": session.get("step_total"),
         "started_at": session.get("started_at"),
+        "stats": session.get("stats"),
         "error": session.get("error"),
     }
 

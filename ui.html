@@ -453,6 +453,10 @@
   .result-card { background: var(--surface); border: 1px solid var(--accent-border); border-radius: var(--rl); padding: 36px; text-align: center; }
   .result-title { font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 6px; }
   .result-sub { font-size: 13px; color: var(--muted); margin-bottom: 28px; }
+  .result-stats { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin: 0 0 24px; }
+  .stat-chip { font-family: var(--mono); font-size: 11px; letter-spacing: .04em; color: var(--muted); background: var(--accent-dim); border: 1px solid var(--accent-border); border-radius: 999px; padding: 5px 12px; }
+  .stat-chip b { color: var(--accent); font-weight: 700; }
+
   .result-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .btn-view { background: var(--accent); color: #000; padding: 12px 28px; border: none; border-radius: var(--r); font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .05em; cursor: pointer; }
   .btn-view:hover { background: #d4ff1a; }
@@ -635,6 +639,7 @@
         <div class="result-title">Report Ready</div>
         <div class="result-sub" id="result-sub"></div>
         <div class="result-sub" id="result-meta">Generated in <span id="result-time">-</span></div>
+        <div class="result-stats" id="result-stats"></div>
         <div class="result-actions">
           <button class="btn-view" onclick="viewPDF()">VIEW REPORT</button>
           <button class="btn-dl"   onclick="downloadPDF()">DOWNLOAD PDF</button>
@@ -975,6 +980,7 @@ async function pollStatus() {
       clearInterval(pollTimer);
       if (elapsedTimer) clearInterval(elapsedTimer);
       $('result-time').textContent = fmtElapsed(Math.round((Date.now() - startedAt) / 1000));
+      renderStats(d.stats);
       hide('step-progress');
       $('result-sub').textContent = $('topic-input').value.trim();
       show('step-result');
@@ -1018,6 +1024,16 @@ async function downloadPDF() {
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   } catch(e) { agentError(`Could not download PDF: ${e.message}`); }
+}
+
+/* Audit and factcheck are shorter than one poll, so their numbers are shown
+   on the result card rather than only in the live detail line. */
+function renderStats(stats) {
+  const chips = [];
+  if (stats?.sources)   chips.push(`<span class="stat-chip"><b>${stats.sources}</b> sources cited</span>`);
+  if (stats?.grounding != null) chips.push(`<span class="stat-chip"><b>${Math.round(stats.grounding * 100)}%</b> claims verified</span>`);
+  if (stats?.score != null)     chips.push(`<span class="stat-chip">audit score <b>${stats.score}/10</b></span>`);
+  $('result-stats').innerHTML = chips.join('');
 }
 
 function agentError(msg) {
