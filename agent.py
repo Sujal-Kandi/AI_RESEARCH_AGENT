@@ -423,10 +423,25 @@ def source_tier(url: str) -> int:
         return 2
     return 1
 
+# Search and page fetches are network-bound and have no shared state, so they
+# run concurrently. IDs are still assigned in query order afterwards, which
+# keeps citation numbers stable regardless of which request finishes first.
+CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "5"))
+DEEP_FETCH_LIMIT = int(os.getenv("DEEP_FETCH_LIMIT", "5"))
+
+def _search_one(query: str):
+    """Run one search query. Never raises — a dead query must not kill the crawl."""
+    try:
+        response = get_web_search().invoke(query)
+        return response.get("results", []) if isinstance(response, dict) else response
+    except Exception as e:
+        print(f"  Query failed: {query[:50]} — {e}")
+        return []
+
 def crawler_node(state: AgentState):
     queries = state['plan'].queries
     rounds = state.get("research_rounds", 0) + 1
-    print(f"\n[CRAWLER] Round {rounds} - {len(queries)} queries...")
+    print(f"\n[CRAWLER] Round {rounds} - {len(queries)} queries ({CRAWL_WORKERS} at a time)...")
 
     source_index: Dict[int, str] = {}
     source_titles: Dict[int, str] = {}
@@ -438,59 +453,58 @@ def crawler_node(state: AgentState):
     for k, v in (state.get("source_texts") or {}).items():
         source_texts[int(k)] = v
 
-    seen_urls = set(source_index.values())
-    # Store (sid, url, snippet) for deep fetch candidates
-    new_sources = []
-    raw_chunks = []
+    with ThreadPoolExecutor(max_workers=min(CRAWL_WORKERS, max(len(queries), 1))) as pool:
+        results_per_query = list(pool.map(_search_one, queries))
 
-    for i, q in enumerate(queries, 1):
-        print(f"  [{i}/{len(queries)}] {q[:65]}...")
-        try:
-            web_search = get_web_search()
-            response = web_search.invoke(q)
-            items = response.get("results", []) if isinstance(response, dict) else response
-            for r in items:
-                url = (r.get("url") or "").strip()
-                if not url or url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                sid = len(source_index) + 1
-                source_index[sid] = url
-                title = (r.get("title") or url)[:80]
-                source_titles[sid] = title
-                content = (r.get("raw_content") or r.get("content") or "")[:600]
-                new_sources.append((sid, url, title, content))
-        except Exception as e:
-            print(f"  Query failed: {e}")
+    seen_urls = set(source_index.values())
+    new_sources = []  # (sid, url, title, snippet)
+    for items in results_per_query:
+        for r in items:
+            url = (r.get("url") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            sid = len(source_index) + 1
+            source_index[sid] = url
+            title = (r.get("title") or url)[:80]
+            source_titles[sid] = title
+            new_sources.append((sid, url, title, (r.get("raw_content") or r.get("content") or "")[:600]))
 
     # Deep fetch the most authoritative sources first — official/primary domains
     # are where the hard numbers live, so they get the full-page fetch budget.
-    print(f"  Deep fetching top sources for full content...")
-    deep_fetch_count = 0
-    for sid, url, title, snippet in sorted(new_sources, key=lambda s: source_tier(s[1])):
-        # Skip PDFs, social media, video sites
-        skip = any(x in url for x in ["youtube.com", "twitter.com", "linkedin.com", ".pdf", "reddit.com"])
-        if not skip and deep_fetch_count < 5:
-            full_content = deep_fetch(url, max_chars=2000)
-            if len(full_content) > len(snippet):
-                content = full_content
-                deep_fetch_count += 1
-            else:
-                content = snippet
-        else:
-            content = snippet
-        source_texts[sid] = content
+    ranked = sorted(new_sources, key=lambda s: source_tier(s[1]))
+    skip_markers = ("youtube.com", "twitter.com", "linkedin.com", ".pdf", "reddit.com")
+    to_fetch = [s for s in ranked if not any(x in s[1] for x in skip_markers)][:DEEP_FETCH_LIMIT]
 
-    for sid, url, title, _ in new_sources:
-        raw_chunks.append(f"[{sid}] SOURCE: {url}\nTITLE: {title}\n{source_texts.get(sid, '')}")
+    print(f"  Deep fetching {len(to_fetch)} top sources in parallel...")
+    fetched = {}
+    if to_fetch:
+        with ThreadPoolExecutor(max_workers=len(to_fetch)) as pool:
+            for (sid, url, _, _), full in zip(
+                to_fetch, pool.map(lambda s: deep_fetch(s[1], max_chars=2000), to_fetch)
+            ):
+                fetched[sid] = full
+
+    deep_fetch_count = 0
+    for sid, url, title, snippet in new_sources:
+        full = fetched.get(sid, "")
+        if len(full) > len(snippet):
+            source_texts[sid] = full
+            deep_fetch_count += 1
+        else:
+            source_texts[sid] = snippet
+
+    raw_chunks = [
+        f"[{sid}] SOURCE: {url}\nTITLE: {title}\n{source_texts.get(sid, '')}"
+        for sid, url, title, _ in new_sources
+    ]
 
     print(f"  {len(source_index)} sources indexed, {deep_fetch_count} deep fetched")
 
     # ── GUARD: stop before any LLM calls if web returned nothing useful ───────
-    new_sources_count = len(source_index)
-    if new_sources_count < 3:
+    if len(source_index) < 3:
         raise ValueError(
-            f"Not enough sources found for '{state['topic']}' ({new_sources_count} result(s)). "
+            f"Not enough sources found for '{state['topic']}' ({len(source_index)} result(s)). "
             "This topic may not have enough public information available. "
             "Try a well-known subject, event, company, or technology."
         )

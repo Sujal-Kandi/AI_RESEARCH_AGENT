@@ -165,6 +165,8 @@ TOGETHER_API_KEY=your_together_key         # optional, fallback provider
 
 Optional tuning (defaults shown):
 ```
+CRAWL_WORKERS=5            # search queries run concurrently
+DEEP_FETCH_LIMIT=5         # full-page fetches per round (also run concurrently)
 SECTION_COUNT=5            # sections per report
 SECTION_WORKERS=3          # sections written concurrently
 SECTION_MIN_WORDS=600      # target words per section (evidence decides the real length)
