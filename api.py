@@ -2,6 +2,7 @@ import io
 import os
 import re
 import threading
+import time
 import unicodedata
 import uuid
 from contextlib import asynccontextmanager
@@ -197,6 +198,10 @@ def plan_research(
         "reasoning": "",
         "current_node": "strategist",
         "progress": 5,
+        "detail": "Planning search queries",
+        "step_done": None,
+        "step_total": None,
+        "started_at": None,
         "pdf_bytes": None,
         "pdf_filename": None,
         "error": None,
@@ -248,6 +253,7 @@ def start_research(
         raise HTTPException(status_code=400, detail=f"Session is in state: {session['status']}")
 
     session["status"] = "running"
+    session["started_at"] = time.time()
     if req.queries:
         session["_state"]["plan"].queries = req.queries
 
@@ -290,13 +296,43 @@ def psycopg2_bytes(data: bytes):
     return Binary(data)
 
 
+# Each stage owns a slice of the bar. Progress inside a slice comes from the
+# pipeline's own events (queries searched, sections written), so the number
+# moves because real work finished, not because time passed.
+STAGE_SPANS = {
+    "crawler":          (12, 32),
+    "architect":        (32, 70),
+    "audit":            (70, 76),
+    "targeted_rewrite": (76, 88),
+    "factcheck":        (88, 93),
+    "refine":           (93, 95),
+    "exporting":        (95, 99),
+}
+
+
 def _run_pipeline(session_id: str, username: str):
     session = sessions[session_id]
     state = session["_state"].copy()
 
-    def update(node: str, progress: int):
+    def update(node: str, progress: int, detail: str = ""):
         session["current_node"] = node
         session["progress"] = progress
+        session["detail"] = detail
+        session["step_done"] = None
+        session["step_total"] = None
+
+    def on_progress(stage: str, detail: str, done, total):
+        """Turn a pipeline event into a bar position inside that stage's slice."""
+        low, high = STAGE_SPANS.get(stage, (session["progress"], session["progress"]))
+        fraction = (done / total) if (done is not None and total) else 0
+        session["current_node"] = stage
+        session["detail"] = detail
+        session["step_done"] = done
+        session["step_total"] = total
+        # Never let the bar walk backwards between stages.
+        session["progress"] = max(session["progress"], int(low + (high - low) * fraction))
+
+    state["_progress"] = on_progress
 
     try:
         from agent import (
@@ -310,34 +346,31 @@ def _run_pipeline(session_id: str, username: str):
             targeted_rewrite_node,
         )
 
-        update("crawler", 15)
+        update("crawler", 12, "Starting web research")
         state.update(crawler_node(state))
 
-        update("architect", 35)
+        update("architect", 32, "Drafting the report")
         state.update(architect_node(state))
 
-        update("audit", 65)
+        update("audit", 70, "Auditing the draft")
         state.update(audit_node(state))
 
-        update("targeted_rewrite", 75)
+        update("targeted_rewrite", 76, "Improving weak sections")
         result = targeted_rewrite_node(state)
         if result:
             state.update(result)
 
-        update("factcheck", 88)
+        update("factcheck", 88, "Verifying claims against sources")
         state.update(factcheck_node(state))
 
         if should_refine(state) == "refine":
-            update("refine", 90)
+            update("refine", 93, "Report too thin, researching further")
             state.update(refine_node(state))
-            update("crawler_2", 92)
             state.update(crawler_node(state))
-            update("architect_2", 94)
             state.update(architect_node(state))
-            update("factcheck_2", 97)
             state.update(factcheck_node(state))
 
-        update("exporting", 98)
+        update("exporting", 95, "Building the PDF")
         pdf_path = export_to_pdf(
             state["raw_report"],
             state["source_index"],
@@ -360,6 +393,9 @@ def _run_pipeline(session_id: str, username: str):
             "status": "done",
             "current_node": "done",
             "progress": 100,
+            "detail": f"{len(state.get('source_index') or {})} sources cited",
+            "step_done": None,
+            "step_total": None,
             "pdf_bytes": pdf_bytes,
             "pdf_filename": pdf_filename,
         })
@@ -387,6 +423,10 @@ def get_status(
         "status": session["status"],
         "current_node": session["current_node"],
         "progress": session["progress"],
+        "detail": session.get("detail", ""),
+        "step_done": session.get("step_done"),
+        "step_total": session.get("step_total"),
+        "started_at": session.get("started_at"),
         "error": session.get("error"),
     }
 

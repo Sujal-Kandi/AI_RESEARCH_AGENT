@@ -3,7 +3,7 @@ import sqlite3
 import requests
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import List, Dict
 from dotenv import load_dotenv
@@ -429,6 +429,20 @@ def source_tier(url: str) -> int:
 CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "5"))
 DEEP_FETCH_LIMIT = int(os.getenv("DEEP_FETCH_LIMIT", "5"))
 
+def emit(state, stage: str, detail: str = "", done=None, total=None):
+    """Report real pipeline progress to whoever is watching (the API, the CLI).
+
+    The callback lives in state under "_progress" so nothing here depends on a
+    global, and a missing or failing callback can never break a run.
+    """
+    cb = state.get("_progress") if isinstance(state, dict) else None
+    if not cb:
+        return
+    try:
+        cb(stage, detail, done, total)
+    except Exception:
+        pass
+
 def _search_one(query: str):
     """Run one search query. Never raises — a dead query must not kill the crawl."""
     try:
@@ -453,8 +467,17 @@ def crawler_node(state: AgentState):
     for k, v in (state.get("source_texts") or {}).items():
         source_texts[int(k)] = v
 
+    emit(state, "crawler", "Searching the web", 0, len(queries))
+    results_per_query = [[] for _ in queries]
+    finished = 0
     with ThreadPoolExecutor(max_workers=min(CRAWL_WORKERS, max(len(queries), 1))) as pool:
-        results_per_query = list(pool.map(_search_one, queries))
+        futures = {pool.submit(_search_one, q): i for i, q in enumerate(queries)}
+        for fut in as_completed(futures):
+            # Results are stored by query index, so citation numbering stays
+            # stable even though completion order is arbitrary.
+            results_per_query[futures[fut]] = fut.result()
+            finished += 1
+            emit(state, "crawler", "Searching the web", finished, len(queries))
 
     seen_urls = set(source_index.values())
     new_sources = []  # (sid, url, title, snippet)
@@ -479,11 +502,14 @@ def crawler_node(state: AgentState):
     print(f"  Deep fetching {len(to_fetch)} top sources in parallel...")
     fetched = {}
     if to_fetch:
+        emit(state, "crawler", "Reading top sources", 0, len(to_fetch))
+        done_fetch = 0
         with ThreadPoolExecutor(max_workers=len(to_fetch)) as pool:
-            for (sid, url, _, _), full in zip(
-                to_fetch, pool.map(lambda s: deep_fetch(s[1], max_chars=2000), to_fetch)
-            ):
-                fetched[sid] = full
+            futures = {pool.submit(deep_fetch, s[1], 2000): s[0] for s in to_fetch}
+            for fut in as_completed(futures):
+                fetched[futures[fut]] = fut.result()
+                done_fetch += 1
+                emit(state, "crawler", "Reading top sources", done_fetch, len(to_fetch))
 
     deep_fetch_count = 0
     for sid, url, title, snippet in new_sources:
@@ -500,6 +526,7 @@ def crawler_node(state: AgentState):
     ]
 
     print(f"  {len(source_index)} sources indexed, {deep_fetch_count} deep fetched")
+    emit(state, "crawler", f"{len(source_index)} sources indexed, {deep_fetch_count} read in full")
 
     # ── GUARD: stop before any LLM calls if web returned nothing useful ───────
     if len(source_index) < 3:
@@ -672,6 +699,7 @@ RAW DATA:
 
     # Step 1: Write title, key findings, executive summary
     print("  Writing header (title, findings, summary)...")
+    emit(state, "architect", "Writing title, key findings and summary")
     header = llm_invoke_with_rotation([
         SystemMessage(content=section_system),
         HumanMessage(content=f"""{context_block}
@@ -694,6 +722,7 @@ Write ONLY the following three parts, nothing else:
     header = strip_slop(header)
 
     # Step 2: Write each section independently, in parallel
+    emit(state, "architect", "Planning report sections")
     section_topics = generate_section_topics(topic, raw)
 
     def write_section(index_and_title):
@@ -744,11 +773,23 @@ Write the section now:""")
         return section
 
     workers = max(1, min(SECTION_WORKERS, len(section_topics)))
+    emit(state, "architect", "Writing sections", 0, len(section_topics))
+    sections = [""] * len(section_topics)
+    written = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        sections = list(pool.map(write_section, enumerate(section_topics)))
+        futures = {
+            pool.submit(write_section, (i, t)): i
+            for i, t in enumerate(section_topics)
+        }
+        for fut in as_completed(futures):
+            i = futures[fut]
+            sections[i] = fut.result()
+            written += 1
+            emit(state, "architect", f"Wrote: {section_topics[i]}", written, len(section_topics))
 
     # Step 3: Write synthesis
     print("  Writing synthesis...")
+    emit(state, "architect", "Writing cross-section synthesis")
     synthesis = llm_invoke_with_rotation([
         SystemMessage(content=section_system),
         HumanMessage(content=f"""{context_block}
@@ -765,6 +806,7 @@ Be specific and opinionated, and tie each claim to the [N] that supports it. No 
 
     raw_report = header + "\n\n" + "\n\n".join(sections) + "\n\n" + synthesis
     print(f"  Total report: {len(raw_report)} chars across {len(sections)} sections")
+    emit(state, "architect", f"{len(raw_report.split())} words across {len(sections)} sections")
 
     with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
         f.write(raw_report)
@@ -863,6 +905,9 @@ def factcheck_node(state: AgentState):
     for sentence in stats["unverified"][:3]:
         print(f"  [UNSUPPORTED] {sentence[:120]}")
 
+    emit(state, "factcheck",
+         f"{stats['checked']} factual claims checked, {stats['grounding']:.0%} grounded",
+         stats["checked"] - len(stats["unverified"]), stats["checked"])
     return {"raw_report": cleaned, "grounding": stats["grounding"]}
 
 def audit_node(state: AgentState):
@@ -881,6 +926,7 @@ def audit_node(state: AgentState):
         f"SECTION: {title.strip()}\n{body.strip()[:300]}" for title, body in sections
     ) or raw[:3000]
 
+    emit(state, "audit", f"Reviewing {len(sections)} sections for weak arguments")
     audit = _structured_invoke(ReportAudit, [
         SystemMessage(content=CRITIC_PROMPT),
         HumanMessage(content=f"TOPIC: {state['topic']}\n\nREPORT SECTIONS:\n{preview}")
@@ -896,6 +942,8 @@ def audit_node(state: AgentState):
     for weak in audit.weak_sections[:2]:
         print(f"  Weak: {weak.section[:60]} — {weak.problem}")
 
+    emit(state, "audit",
+         f"Scored {audit.score}/10, {len(audit.weak_sections[:2])} section(s) flagged for rewrite")
     return {
         "quality": audit,
         "weak_sections": audit.weak_sections[:2],
@@ -1209,14 +1257,22 @@ def targeted_rewrite_node(state: AgentState):
     if not jobs:
         return {}
 
+    emit(state, "targeted_rewrite", "Rewriting flagged sections", 0, len(jobs))
+    rewrites = [""] * len(jobs)
+    completed = 0
     with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
-        rewrites = list(pool.map(
-            lambda job: _rewrite_one(
-                state["topic"], job[1], job[2], job[3],
+        futures = {
+            pool.submit(
+                _rewrite_one, state["topic"], job[1], job[2], job[3],
                 source_index, source_titles, source_texts,
-            ),
-            jobs,
-        ))
+            ): i
+            for i, job in enumerate(jobs)
+        }
+        for fut in as_completed(futures):
+            i = futures[fut]
+            rewrites[i] = fut.result()
+            completed += 1
+            emit(state, "targeted_rewrite", f"Rewrote: {jobs[i][1]}", completed, len(jobs))
 
     # Splice back-to-front so earlier match offsets stay valid.
     updated_report = raw

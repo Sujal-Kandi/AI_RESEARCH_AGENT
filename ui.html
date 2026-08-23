@@ -432,10 +432,22 @@
   .progress-track { height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }
   .progress-fill { height: 100%; background: var(--accent); border-radius: 1px; transition: width .6s ease; box-shadow: 0 0 8px var(--accent); }
 
+  .progress-detail { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-family: var(--mono); font-size: 12px; color: var(--muted); min-height: 16px; }
+  .progress-detail .detail-text { display: flex; align-items: center; gap: 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .progress-detail .elapsed { color: #444; flex-shrink: 0; }
+  .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); } }
+
   .node-log { display: flex; flex-direction: column; gap: 4px; }
   .node-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 6px; font-family: var(--mono); font-size: 12px; color: var(--muted); transition: all .2s; }
   .node-item.active { background: var(--accent-dim); border: 1px solid var(--accent-border); color: var(--accent); }
   .node-item.done { color: #333; }
+  .node-item.done .node-icon::before { content: '\2713'; }
+  .node-item.done .node-icon { font-size: 11px; }
+  .node-item.done .node-icon > span { display: none; }
+  .node-step { margin-left: auto; font-size: 11px; letter-spacing: .04em; }
+  .node-item.active .node-icon { animation: spin 2.4s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .node-icon { width: 18px; text-align: center; }
 
   .result-card { background: var(--surface); border: 1px solid var(--accent-border); border-radius: var(--rl); padding: 36px; text-align: center; }
@@ -611,6 +623,10 @@
           <div class="progress-track">
             <div class="progress-fill" id="progress-bar" style="width:0%"></div>
           </div>
+          <div class="progress-detail">
+            <span class="detail-text"><span class="pulse-dot"></span><span id="progress-detail"></span></span>
+            <span class="elapsed" id="progress-elapsed">0:00</span>
+          </div>
           <div class="node-log" id="node-log"></div>
         </div>
       </div>
@@ -618,6 +634,7 @@
       <div id="step-result" class="result-card hidden">
         <div class="result-title">Report Ready</div>
         <div class="result-sub" id="result-sub"></div>
+        <div class="result-sub" id="result-meta">Generated in <span id="result-time">-</span></div>
         <div class="result-actions">
           <button class="btn-view" onclick="viewPDF()">VIEW REPORT</button>
           <button class="btn-dl"   onclick="downloadPDF()">DOWNLOAD PDF</button>
@@ -895,6 +912,15 @@ function renderQueries() {
   $('query-count').textContent = `${queries.length} queries`;
 }
 
+let startedAt = null, elapsedTimer = null;
+
+const fmtElapsed = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+function tickElapsed() {
+  if (!startedAt) return;
+  $('progress-elapsed').textContent = fmtElapsed(Math.round((Date.now() - startedAt) / 1000));
+}
+
 function removeQuery(i) { queries.splice(i, 1); renderQueries(); }
 function rejectPlan()   { sessionId = null; queries = []; hide('step-plan'); show('step-input'); $('topic-input').focus(); }
 
@@ -903,8 +929,13 @@ async function startResearch() {
   show('step-progress');
   $('progress-topic').textContent = $('topic-input').value.trim();
   $('node-log').innerHTML = NODES.map(n =>
-    `<div class="node-item" id="n-${n.key}"><span class="node-icon">${n.icon}</span><span>${n.label}</span></div>`
+    `<div class="node-item" id="n-${n.key}"><span class="node-icon"><span>${n.icon}</span></span><span>${n.label}</span><span class="node-step" id="s-${n.key}"></span></div>`
   ).join('');
+  $('progress-detail').textContent = 'Starting research';
+  startedAt = Date.now();
+  if (elapsedTimer) clearInterval(elapsedTimer);
+  elapsedTimer = setInterval(tickElapsed, 1000);
+  tickElapsed();
 
   try {
     const res = await fetch('/research/start', {
@@ -914,7 +945,7 @@ async function startResearch() {
     });
     if (res.status === 401) { logout(); return; }
     if (!res.ok) throw new Error(await res.text());
-    pollTimer = setInterval(pollStatus, 2000);
+    pollTimer = setInterval(pollStatus, 1000);
   } catch(e) { agentError(e.message); }
 }
 
@@ -926,6 +957,7 @@ async function pollStatus() {
 
     $('progress-bar').style.width = d.progress + '%';
     $('progress-pct').textContent = d.progress + '%';
+    if (d.detail) $('progress-detail').textContent = d.detail;
 
     const cur = NODES.findIndex(n => n.key === d.current_node);
     NODES.forEach((n, i) => {
@@ -934,16 +966,22 @@ async function pollStatus() {
       el.classList.remove('active','done');
       if (i < cur)       el.classList.add('done');
       else if (i === cur) el.classList.add('active');
+      const step = $(`s-${n.key}`);
+      if (step && i === cur) step.textContent = d.step_total ? `${d.step_done}/${d.step_total}` : '';
+      else if (step && i !== cur) step.textContent = '';
     });
 
     if (d.status === 'done') {
       clearInterval(pollTimer);
+      if (elapsedTimer) clearInterval(elapsedTimer);
+      $('result-time').textContent = fmtElapsed(Math.round((Date.now() - startedAt) / 1000));
       hide('step-progress');
       $('result-sub').textContent = $('topic-input').value.trim();
       show('step-result');
     }
     if (d.status === 'error') {
       clearInterval(pollTimer);
+      if (elapsedTimer) clearInterval(elapsedTimer);
       hide('step-progress');
       agentError(d.error || 'Unknown error');
     }
@@ -990,6 +1028,8 @@ function agentError(msg) {
 
 function resetAgent() {
   if (pollTimer) clearInterval(pollTimer);
+  if (elapsedTimer) clearInterval(elapsedTimer);
+  startedAt = null;
   sessionId = null; queries = [];
   $('topic-input').value = '';
   ['step-plan','step-progress','step-result','step-error'].forEach(hide);
