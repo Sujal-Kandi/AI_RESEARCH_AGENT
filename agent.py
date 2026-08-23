@@ -497,7 +497,11 @@ def crawler_node(state: AgentState):
     # are where the hard numbers live, so they get the full-page fetch budget.
     ranked = sorted(new_sources, key=lambda s: source_tier(s[1]))
     skip_markers = ("youtube.com", "twitter.com", "linkedin.com", ".pdf", "reddit.com")
-    to_fetch = [s for s in ranked if not any(x in s[1] for x in skip_markers)][:DEEP_FETCH_LIMIT]
+    # Fetches fail often (paywalls, timeouts), so try extras to actually land
+    # DEEP_FETCH_LIMIT pages of full text.
+    to_fetch = [
+        s for s in ranked if not any(x in s[1] for x in skip_markers)
+    ][:DEEP_FETCH_LIMIT + 6]
 
     print(f"  Deep fetching {len(to_fetch)} top sources in parallel...")
     fetched = {}
@@ -574,37 +578,43 @@ EVIDENCE_PER_SECTION = int(os.getenv("EVIDENCE_PER_SECTION", "9000"))
 # Set SECTION_COUNT to pin the report shape; unset, it follows the evidence.
 SECTION_COUNT_OVERRIDE = os.getenv("SECTION_COUNT")
 
-def plan_section_count(source_texts: Dict[int, str]) -> int:
-    """Decide how many sections the crawled evidence can actually fill.
+def evidence_section_ceiling(source_texts: Dict[int, str]) -> int:
+    """The most sections the crawled material could fill without padding.
 
-    A narrow question that returned three usable pages gets a short report; a
-    broad one with plenty of full-text sources gets a long one. Only sources
-    with real body text count, so a pile of 200-char search snippets cannot
-    inflate the report into padding.
+    Deep-fetched pages carry a section on their own; search snippets are
+    counted at their real (small) size, so a thin crawl caps the report even
+    when the topic is broad.
+    """
+    usable = sum(min(len(t or ""), 4000) for t in source_texts.values() if len(t or "") > 300)
+    return max(SECTION_MIN, min(SECTION_MAX, usable // EVIDENCE_PER_SECTION))
+
+def generate_section_topics(topic: str, raw_data: str, ceiling: int) -> List[str]:
+    """Let the topic decide how many sections it needs, capped by the evidence.
+
+    Evidence volume alone is a bad proxy for scope — a one-line question and a
+    decades-long history return similar amounts of text — so the model picks
+    the count from the subject and the crawl only sets the upper bound.
     """
     if SECTION_COUNT_OVERRIDE:
-        return max(1, int(SECTION_COUNT_OVERRIDE))
-    substantial = [t for t in source_texts.values() if len(t or "") > 600]
-    usable_chars = sum(len(t) for t in substantial)
-    return max(SECTION_MIN, min(SECTION_MAX, usable_chars // EVIDENCE_PER_SECTION))
+        ceiling = max(1, int(SECTION_COUNT_OVERRIDE))
+        low = ceiling
+    else:
+        low = SECTION_MIN
+    prompt = f"""You are planning a research report on: "{topic}"
 
-def generate_section_topics(topic: str, raw_data: str, count: int) -> List[str]:
-    """Ask the LLM to propose section titles tailored to the research topic."""
-    shape = (
-        "- One section MUST be a timeline of key events (title it like \"Timeline: [Topic] from [Year] to [Year]\")\n"
-        "- One section MUST be a contrarian/critical analysis (title it like \"The Contrarian View: Was Failure Inevitable?\" or similar)"
-    )
-    if count >= 5:
-        shape += "\n- One section MUST be a comparison (title it like \"Comparative Analysis: [A] vs [B]\" or similar)"
-    prompt = f"""You are planning a long-form research report on: "{topic}"
+First decide how many sections this subject actually needs, between {low} and {ceiling}.
+- A narrow factual question (what a term means, how one mechanism works) needs {low}.
+- A subject spanning decades, several actors, or a rise-and-fall arc needs the upper end.
+- Choose the number the subject warrants, not the maximum allowed.
 
-Based on this topic, propose exactly {count} section titles that together give comprehensive coverage.
+Then propose that many section titles.
 Rules:
 - Each title must be specific and distinct — no overlap
 - Each section must be broad enough to carry {SECTION_MIN_WORDS}+ words of dense analysis on its own
-{shape}
+- If you use 4 or more sections, one MUST be a timeline of key events and one MUST be a contrarian/critical analysis
+- If you use 5 or more sections, one MUST also be a comparison ("Comparative Analysis: [A] vs [B]")
 - Merge narrow angles (origins, peak, decline, legacy) into fewer, deeper sections rather than splitting them
-Return ONLY a Python list of {count} strings, nothing else. Example:
+Return ONLY a Python list of strings, nothing else. Example:
 ["Title One", "Title Two", "Title Three"]"""
     try:
         response = llm_invoke_with_rotation([HumanMessage(content=prompt)]).content.strip()
@@ -613,7 +623,7 @@ Return ONLY a Python list of {count} strings, nothing else. Example:
         if match:
             titles = [t for t in ast.literal_eval(match.group()) if isinstance(t, str) and t.strip()]
             if titles:
-                return titles[:count]
+                return titles[:ceiling]
     except Exception:
         pass
     # Fallback generic sections
@@ -627,7 +637,7 @@ Return ONLY a Python list of {count} strings, nothing else. Example:
         "Stakeholders: Who Gained, Who Lost, and by How Much",
         "Counterfactuals the Evidence Supports",
         "Legacy and Measurable Aftermath",
-    ][:count]
+    ][:ceiling]
 
 STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "from", "with",
@@ -780,9 +790,9 @@ Write ONLY the following three parts, nothing else:
 
     # Step 2: Write each section independently, in parallel
     emit(state, "architect", "Planning report sections")
-    count = plan_section_count(source_texts)
-    section_topics = generate_section_topics(topic, raw, count)
-    print(f"  Evidence supports {len(section_topics)} sections")
+    ceiling = evidence_section_ceiling(source_texts)
+    section_topics = generate_section_topics(topic, raw, ceiling)
+    print(f"  Planned {len(section_topics)} sections (evidence allows up to {ceiling})")
     section_sources = allocate_sources(
         section_topics, topic, source_texts, source_titles, source_index
     )
@@ -890,8 +900,15 @@ def _numbers_in(text: str) -> List[str]:
     out = []
     for n in raw_numbers:
         clean = n.replace(",", "").rstrip(".")
+        if not clean:
+            continue
+        try:
+            value = float(clean)
+        except ValueError:
+            # Version strings ("2.3.2") and the like are not quantities.
+            continue
         # Single digits and trivial values match almost any text; ignore them.
-        if clean and (len(clean) > 1 or clean == "0") and float(clean or 0) >= 2:
+        if (len(clean) > 1 or clean == "0") and value >= 2:
             out.append(clean)
     return out
 
@@ -1359,7 +1376,8 @@ def targeted_rewrite_node(state: AgentState):
             + updated_report[sec_match.end(2):]
         )
 
-    print(f"  Rewrite complete. {len(jobs)} section(s) improved.")
+    changed = sum(1 for job, new in zip(jobs, rewrites) if new != job[3])
+    print(f"  Rewrite complete. {changed}/{len(jobs)} section(s) changed.")
 
     with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
         f.write(updated_report)

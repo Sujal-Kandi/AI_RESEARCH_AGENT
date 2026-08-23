@@ -169,7 +169,8 @@ CRAWL_WORKERS=5            # search queries run concurrently
 DEEP_FETCH_LIMIT=12        # full-page fetches per round (also run concurrently)
 SECTION_MIN=3              # shortest report the pipeline will produce
 SECTION_MAX=9              # longest report the pipeline will produce
-EVIDENCE_PER_SECTION=9000  # chars of usable source text each section needs
+EVIDENCE_PER_SECTION=9000  # usable source text per section; caps how long a report can get
+                           # (within that cap, the topic decides the section count)
 SECTION_COUNT=              # set to pin the section count; unset = evidence decides
 SECTION_WORKERS=4          # sections written concurrently
 SECTION_MIN_WORDS=600      # target words per section (evidence decides the real length)
