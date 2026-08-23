@@ -172,7 +172,16 @@ SECTION_WORKERS=3          # sections written concurrently
 SECTION_MIN_WORDS=600      # target words per section (evidence decides the real length)
 STRIP_UNVERIFIED=1         # delete sentences whose figures no source supports
 MAX_STRIP_RATIO=0.4        # never delete more than this share of a paragraph
+KEY_COOLDOWN_SECONDS=60    # how long a rate-limited key is skipped for
+MAX_RATE_LIMIT_WAIT=90     # longest wait for a cooling key before trying Together.ai
+MAX_TOTAL_RATE_LIMIT_WAIT=300  # total waiting budget for one LLM call
 ```
+
+Rate limits: a key that returns 429 is remembered as *cooling* (using the delay the
+provider reports) rather than burned for the rest of the run, so the pipeline rotates to
+the next key and comes back to it once its window resets. When every key is cooling it
+waits for the soonest one instead of failing the run — with a single key this is the
+difference between a report and a "rate limited, try again in 5 minutes" error.
 
 Grounding: each section is given its own ranked subset of the crawled sources (official
 and primary domains outrank blogs), and the fact-check pass checks the numbers in each

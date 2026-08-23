@@ -58,8 +58,17 @@ class RateLimitExhausted(Exception):
 _groq_keys = []
 _key_index = 0
 _using_fallback = False
-_tried_keys: set = set()
+# Key index -> monotonic timestamp when that key is expected to be usable again.
+# A rate-limited key is remembered as cooling rather than permanently burned, so
+# a long run can come back to it once its per-minute window resets.
+_key_cooldowns: Dict[int, float] = {}
 llm = None
+
+# Longest we will sit waiting for a cooling key before giving up on Groq, and
+# the total waiting budget for a single invocation.
+MAX_RATE_LIMIT_WAIT = float(os.getenv("MAX_RATE_LIMIT_WAIT", "90"))
+MAX_TOTAL_RATE_LIMIT_WAIT = float(os.getenv("MAX_TOTAL_RATE_LIMIT_WAIT", "300"))
+DEFAULT_COOLDOWN = float(os.getenv("KEY_COOLDOWN_SECONDS", "60"))
 
 # Guards every mutation of the globals above so parallel section writers cannot
 # rotate past each other's keys or clobber the active client.
@@ -110,51 +119,74 @@ def _is_rate_limit_error(e: Exception) -> bool:
         or "try again" in e_str
     )
 
+def _retry_after_seconds(error: Exception) -> float:
+    """How long the provider says to wait. Groq puts it in the 429 message."""
+    if error is None:
+        return DEFAULT_COOLDOWN
+    import re
+    match = re.search(r"try again in ([\d.]+)\s*(ms|m|s)\b", str(error), re.I)
+    if not match:
+        return DEFAULT_COOLDOWN
+    value, unit = float(match.group(1)), match.group(2).lower()
+    seconds = value / 1000 if unit == "ms" else value * 60 if unit == "m" else value
+    return min(max(seconds, 1.0), 600.0)
+
 def _current_client():
     """Snapshot the active client and the generation it belongs to."""
     with _llm_lock:
         return llm, _llm_generation
 
-def _advance_key(failed_generation: int):
+def _advance_key(failed_generation: int, error: Exception = None):
     """Move to the next usable key/provider unless another thread already did.
 
-    Returns False when nothing is left to try.
+    Returns the number of seconds the caller should sleep before retrying, or
+    None when nothing is left to try. The sleep happens in the caller so this
+    never holds the lock while waiting.
     """
-    global llm, _key_index, _using_fallback, _tried_keys, _llm_generation
+    global llm, _key_index, _using_fallback, _llm_generation
     with _llm_lock:
         if _llm_generation != failed_generation:
             # Another thread already rotated; just retry with the new client.
-            return True
+            return 0.0
         if _using_fallback:
-            return False
+            return None
 
-        _tried_keys.add(_key_index)
-        next_index = next(
-            (i for i in range(len(_groq_keys)) if i not in _tried_keys),
-            None
-        )
-        if next_index is not None:
-            _key_index = next_index
+        now = time.monotonic()
+        _key_cooldowns[_key_index] = now + _retry_after_seconds(error)
+
+        ready = [i for i in range(len(_groq_keys)) if _key_cooldowns.get(i, 0.0) <= now]
+        if ready:
+            _key_index = ready[0]
             llm = make_llm(_groq_keys[_key_index])
             _llm_generation += 1
             print(f"  [KEY ROTATION] Switched to Groq key {_key_index + 1}")
-            time.sleep(3)
-            return True
+            return 1.0
+
+        # Every key is cooling. Waiting for the soonest one is almost always
+        # faster than failing the whole run — a Groq TPM window is ~60s.
+        soonest = min(range(len(_groq_keys)), key=lambda i: _key_cooldowns.get(i, 0.0))
+        wait = max(0.0, _key_cooldowns.get(soonest, 0.0) - now)
+        if wait <= MAX_RATE_LIMIT_WAIT:
+            _key_index = soonest
+            llm = make_llm(_groq_keys[soonest])
+            _llm_generation += 1
+            print(f"  [RATE LIMIT] All {len(_groq_keys)} Groq keys cooling; "
+                  f"waiting {wait:.0f}s for key {soonest + 1}")
+            return wait
 
         print("  [RATE LIMIT] All Groq keys exhausted, switching to Together.ai...")
         try:
             llm = make_together_llm()
         except RuntimeError:
-            return False  # No Together.ai key configured at all
+            return None  # No Together.ai key configured at all
         except Exception as fallback_e:
             if "401" in str(fallback_e) or "invalid" in str(fallback_e).lower():
                 print("  [TOGETHER AUTH FAILED] Invalid API key — check TOGETHER_API_KEY in .env")
             raise fallback_e
         _using_fallback = True
-        _tried_keys = set()  # reset for future use
+        _key_cooldowns.clear()
         _llm_generation += 1
-        time.sleep(2)
-        return True
+        return 2.0
 
 def llm_invoke_with_rotation(messages):
     """Invoke LLM, rotating Groq keys on rate limit, then falling back to Together.ai.
@@ -163,6 +195,7 @@ def llm_invoke_with_rotation(messages):
     the network call itself happens outside the lock so sections run in parallel.
     """
     _init_llm()  # ensure LLM is initialized
+    waited = 0.0
 
     while True:
         client, generation = _current_client()
@@ -172,10 +205,13 @@ def llm_invoke_with_rotation(messages):
             if not _is_rate_limit_error(e):
                 print(f"  [LLM ERROR] {type(e).__name__}: {e}")
                 raise
-            if not _advance_key(generation):
+            wait = _advance_key(generation, e)
+            if wait is None or waited + wait > MAX_TOTAL_RATE_LIMIT_WAIT:
                 raise RateLimitExhausted(
                     "All API keys are currently rate limited. Please try again in 5 minutes."
                 )
+            waited += wait
+            time.sleep(wait)
 
 def _rotate_key():
     """Rotate to next available Groq API key."""
