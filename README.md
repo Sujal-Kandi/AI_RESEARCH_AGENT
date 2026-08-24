@@ -171,6 +171,7 @@ Optional tuning (defaults shown):
 CRAWL_WORKERS=5            # search queries run concurrently
 DEEP_FETCH_LIMIT=12        # full-page fetches per round (also run concurrently)
 PRIMARY_FLOOR=5            # below this many official sources, re-search official domains
+CLAIM_WINDOW=400           # how far apart one sentence's figures may sit in the source
 SECTION_MIN=3              # shortest report the pipeline will produce
 SECTION_MAX=9              # longest report the pipeline will produce
 EVIDENCE_PER_SECTION=9000  # usable source text per section; caps how long a report can get
@@ -196,8 +197,14 @@ difference between a report and a "rate limited, try again in 5 minutes" error.
 
 Grounding: each section is given its own ranked subset of the crawled sources (official
 and primary domains outrank blogs), and the fact-check pass checks the numbers in each
-sentence against the text of the sources it cites — not just that the `[N]` exists.
-Unsupported figures are dropped and a grounding score is printed per run.
+sentence against the text of the sources it cites — not just that the `[N]` exists, and
+not each figure in isolation. A sentence is one claim, so its figures must appear within
+`CLAIM_WINDOW` characters of each other in the cited source; a real Q3 revenue figure
+glued to the wrong year fails, because the two numbers sit paragraphs apart on the page.
+A sentence is judged only against what it cites, falling back to the whole corpus solely
+when the cited pages could not be fetched. Unsupported figures are dropped, and the run
+prints the grounding score plus how many failures were figures that exist but were never
+stated together.
 
 Get free API keys:
 - Tavily: [tavily.com](https://tavily.com)

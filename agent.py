@@ -953,6 +953,9 @@ STRIP_UNVERIFIED = os.getenv("STRIP_UNVERIFIED", "1") != "0"
 # Never gut a section: if more than this share of its factual sentences fail
 # verification, the crawl is too thin to judge and the text is kept as-is.
 MAX_STRIP_RATIO = float(os.getenv("MAX_STRIP_RATIO", "0.4"))
+# How far apart two figures from the same sentence may sit in a source and still
+# be read as describing the same fact.
+CLAIM_WINDOW = int(os.getenv("CLAIM_WINDOW", "400"))
 
 def _numbers_in(text: str) -> List[str]:
     """Numeric tokens that a source must corroborate (years, %, magnitudes)."""
@@ -969,19 +972,52 @@ def _numbers_in(text: str) -> List[str]:
             # Version strings ("2.3.2") and the like are not quantities.
             continue
         # Single digits and trivial values match almost any text; ignore them.
-        if (len(clean) > 1 or clean == "0") and value >= 2:
+        # A decimal is never trivial though — "$1.05 billion" is exactly the
+        # kind of figure worth checking, and the old floor of 2 threw it away.
+        if len(clean) > 1 and (value >= 2 or "." in clean):
             out.append(clean)
     return out
 
+def _number_variants(number: str) -> List[str]:
+    """The ways a source is likely to have written the same quantity."""
+    variants = [number]
+    if number.isdigit() and len(number) > 3:  # 13000 written as 13,000
+        variants.append(f"{int(number):,}")
+    return variants
+
 def _corroborated(number: str, haystack: str) -> bool:
     """True if the number appears in the source text in any usual formatting."""
-    if number in haystack:
+    return any(v in haystack for v in _number_variants(number))
+
+def _positions(number: str, haystack: str) -> List[int]:
+    """Every offset in the source where this quantity is written."""
+    found = []
+    for variant in _number_variants(number):
+        start = haystack.find(variant)
+        while start != -1:
+            found.append(start)
+            start = haystack.find(variant, start + 1)
+    return found
+
+def _co_occurs(numbers: List[str], haystack: str, window: int = CLAIM_WINDOW) -> bool:
+    """True if one passage of the source carries all of a sentence's figures.
+
+    Checking each number separately is what let a real Q3 figure get attached to
+    the wrong year: both strings existed on the page, thousands of characters
+    apart, so the sentence passed. A claim is one fact, so the figures that make
+    it up have to sit near each other in the text that is supposed to support it.
+    """
+    unique = list(dict.fromkeys(numbers))
+    hits = {n: _positions(n, haystack) for n in unique}
+    if any(not p for p in hits.values()):
+        return False
+    if len(unique) == 1:
         return True
-    if len(number) > 3:  # 13000 written as 13,000
-        with_commas = f"{int(float(number)):,}" if number.isdigit() else number
-        if with_commas in haystack:
-            return True
-    return False
+    anchor = min(unique, key=lambda n: len(hits[n]))
+    return any(
+        all(any(abs(p - a) <= window for p in hits[n]) for n in unique if n != anchor)
+        for a in hits[anchor]
+    )
 
 def verify_claims(raw_report: str, source_texts: Dict[int, str], source_index: Dict[int, str]):
     """Strip sentences whose figures no source actually supports.
@@ -996,6 +1032,7 @@ def verify_claims(raw_report: str, source_texts: Dict[int, str], source_index: D
     valid_ids = set(source_index.keys())
 
     kept_lines, unverified, checked, bad_ids = [], [], 0, set()
+    out_of_context = 0
     for line in raw_report.split("\n"):
         if line.startswith("##") or line.startswith("|") or not line.strip():
             kept_lines.append(line)
@@ -1013,10 +1050,15 @@ def verify_claims(raw_report: str, source_texts: Dict[int, str], source_index: D
 
             checked += 1
             cited_text = " ".join(source_texts.get(sid, "") for sid in cited & valid_ids)
-            haystack = cited_text or corpus
-            if all(_corroborated(n, haystack) or _corroborated(n, corpus) for n in numbers):
+            # A sentence is judged against what it cites. The corpus is only a
+            # fallback when the cited pages could not be read at all, otherwise
+            # a claim could borrow support from a source it never pointed at.
+            haystack = cited_text.strip() or corpus
+            if _co_occurs(numbers, haystack):
                 kept_sentences.append(sentence)
             else:
+                if all(_corroborated(n, haystack) for n in numbers):
+                    out_of_context += 1
                 dropped.append(sentence)
 
         if dropped and STRIP_UNVERIFIED and len(dropped) <= max(1, int(len(sentences) * MAX_STRIP_RATIO)):
@@ -1032,6 +1074,7 @@ def verify_claims(raw_report: str, source_texts: Dict[int, str], source_index: D
         "checked": checked,
         "unverified": unverified,
         "grounding": grounding,
+        "out_of_context": out_of_context,
         "invalid_source_ids": sorted(bad_ids),
     }
 
@@ -1042,7 +1085,8 @@ def factcheck_node(state: AgentState):
     cleaned, stats = verify_claims(state.get("raw_report", ""), source_texts, source_index)
 
     print(f"  {stats['checked']} factual sentences checked | grounding {stats['grounding']:.0%}"
-          f" | {len(stats['unverified'])} unsupported")
+          f" | {len(stats['unverified'])} unsupported"
+          f" ({stats['out_of_context']} figures real but not stated together)")
     if stats["invalid_source_ids"]:
         print(f"  Citations to non-existent sources: {stats['invalid_source_ids']}")
     for sentence in stats["unverified"][:3]:
@@ -1132,8 +1176,12 @@ def measure_sections(
                 uncited += len(numbers)
 
             haystack = " ".join(source_texts.get(sid, "") for sid in cited) or corpus
+            # Same standard the fact-check applies: the figures of one claim
+            # must appear together, so a sentence built from two unrelated
+            # passages counts against the section.
+            in_context = _co_occurs(numbers, haystack)
             for n in numbers:
-                if not (_corroborated(n, haystack) or _corroborated(n, corpus)):
+                if not in_context or not _corroborated(n, haystack):
                     unsupported += 1
                 if n in seen:
                     repeated += 1
