@@ -1,11 +1,13 @@
 import os
+import re
 import sqlite3
 import requests
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 from fpdf import FPDF
@@ -285,10 +287,10 @@ class SectionChallenge(BaseModel):
     challenge: str = Field(description="One sharp question or missing angle the rewrite must address.")
 
 class QualityVerdict(BaseModel):
-    score: int = Field(description="Quality score 1-10. 8+ means publish-ready.")
+    score: int = Field(default=5, description="Quality score 1-10, overwritten by the measured rubric.")
     gaps: List[str] = Field(default_factory=list, description="Specific missing data points. Empty list if none.")
-    follow_up_queries: List[str] = Field(default_factory=list, description="New queries to fill gaps. Empty list if score >= 8.")
-    verdict: str = Field(description="APPROVED or NEEDS_MORE_RESEARCH")
+    follow_up_queries: List[str] = Field(default_factory=list, description="One query per gap. Empty list if no gaps.")
+    verdict: str = Field(default="APPROVED", description="APPROVED or NEEDS_MORE_RESEARCH")
 
     @field_validator("gaps", "follow_up_queries", mode="before")
     @classmethod
@@ -301,7 +303,7 @@ class ReportAudit(QualityVerdict):
     """Scoring and weak-section triage in one call instead of two round trips."""
     weak_sections: List[SectionChallenge] = Field(
         default_factory=list,
-        description="The 2 weakest sections and what each rewrite must fix. Empty if none are weak.",
+        description="Sections with a reasoning problem you can point to. Empty if none are weak.",
     )
 
 class AgentState(Dict):
@@ -329,26 +331,23 @@ Generate 10-15 search queries covering:
 - Failures, weaknesses, and overlooked angles
 Every query must target a specific data point. No generic queries."""
 
-CRITIC_PROMPT = """You are a ruthless research quality auditor for a top-tier journal.
-You do two jobs in one pass: score the report, and name its 2 weakest sections.
+CRITIC_PROMPT = """You are a research quality auditor. Grounding, citation coverage,
+fact density and repetition have already been measured against the crawled sources and are
+given to you below — do not re-judge them, and do not guess at them from the prose.
 
-Score the report 1-10 on grounding first, style second:
-- 1-4: Claims without citations, generic filler, reads like a summary of a summary
-- 5-7: Cited but thin — few hard numbers, repeats itself across sections, hedged judgments
-- 8-10: Every substantive claim traceable to a source, specific figures and dates, mechanisms
-  explained, no repetition
-Penalise heavily: numbers or dates with no citation, sentences that could appear in a report on
-any other topic, and paragraphs that restate an earlier point.
-Be harsh. Only approve (score >= 8) if a senior researcher would find it valuable.
-Only ask for more research when a section is missing facts no rewrite could supply.
-
-For weak_sections, return the 2 worst sections (or none if all are solid). Copy each
-section title verbatim and classify the problem as one of:
+Your job is the part measurement cannot do: read the sections and name the ones with a
+reasoning problem. Flag a section only when you can point to the sentence that fails.
+Flagging nothing is a valid and common answer — do not manufacture a fault to fill the list.
+Classify each problem as one of:
 - "Safe explanation" — describes what happened but never says why, or what it cost
-- "Repetition" — repeats a point already made in another section
+- "Repetition" — retells an event another section already narrated
 - "Missing contrarian" — accepts the obvious narrative without challenging it
 - "No specifics" — claims without hard numbers, dates, or named decisions
-Each challenge must be one sharp question the rewrite has to answer."""
+Each challenge must be one sharp question the rewrite has to answer.
+
+Separately, list gaps: data points the report needs that the sources plainly do not contain
+(a rewrite cannot invent them). Give a follow-up query for each. If the report answers its
+topic with the material it has, return no gaps."""
 
 # ── NODES ──────────────────────────────────────────────────────────────────────
 def strategist_node(state: AgentState):
@@ -992,43 +991,223 @@ def factcheck_node(state: AgentState):
          stats["checked"] - len(stats["unverified"]), stats["checked"])
     return {"raw_report": cleaned, "grounding": stats["grounding"]}
 
-def audit_node(state: AgentState):
-    """Score the report and name its weakest sections in a single LLM call.
+MAX_WEAK_SECTIONS = int(os.getenv("MAX_WEAK_SECTIONS", "3"))
 
-    This used to be two serial round trips (challenger, then critic) over the
-    same text; the model was reading the report twice to answer two questions.
+SECTION_RE = re.compile(r'##\s+SECTION:\s*(.+?)\n(.*?)(?=\n##\s|\Z)', re.DOTALL)
+
+
+@dataclass
+class SectionMetrics:
+    """Countable quality signals for one section, measured against the sources."""
+    title: str
+    words: int
+    figures: int
+    uncited: int
+    unsupported: int
+    repeated: int
+
+    @property
+    def density(self) -> float:
+        """Sourced figures per 100 words — how much of the prose carries content."""
+        return 100.0 * self.figures / self.words if self.words else 0.0
+
+    @property
+    def support_rate(self) -> float:
+        return 1.0 - self.unsupported / self.figures if self.figures else 0.0
+
+    @property
+    def cite_rate(self) -> float:
+        return 1.0 - self.uncited / self.figures if self.figures else 0.0
+
+    @property
+    def repeat_rate(self) -> float:
+        return self.repeated / self.figures if self.figures else 0.0
+
+    def failings(self) -> List[str]:
+        """Thresholds a section must clear to count as publishable on its own."""
+        bad = []
+        if self.figures and self.cite_rate < 0.85:
+            bad.append(f"{self.uncited}/{self.figures} figures uncited")
+        if self.figures and self.support_rate < 0.8:
+            bad.append(f"{self.unsupported}/{self.figures} figures no source carries")
+        if self.words >= 150 and self.density < 1.0:
+            bad.append(f"only {self.density:.1f} figures per 100 words")
+        if self.repeat_rate > 0.3:
+            bad.append(f"{self.repeated}/{self.figures} figures already used elsewhere")
+        return bad
+
+
+def measure_sections(
+    raw_report: str,
+    source_texts: Dict[int, str],
+    source_index: Dict[int, str],
+) -> List[SectionMetrics]:
+    """Measure each section against the crawled sources instead of eyeballing it.
+
+    The critic used to score prose it had no way to verify, so its number was a
+    guess. Everything countable — citation coverage, corroboration, fact density,
+    facts recycled from an earlier section — is settled here, deterministically.
+    """
+    corpus = " ".join(source_texts.values())
+    valid_ids = set(source_index.keys())
+    seen: set = set()
+    out: List[SectionMetrics] = []
+
+    for title, body in SECTION_RE.findall(raw_report):
+        figures = uncited = unsupported = repeated = 0
+        # Only figures a *previous* section already used count as repetition;
+        # restating one within the same argument is normal writing.
+        local: set = set()
+
+        for sentence in re.split(r'(?<=[.!?])\s+', body):
+            cited = {int(x) for x in re.findall(r'\[(\d+)\]', sentence)} & valid_ids
+            numbers = _numbers_in(re.sub(r'\[\d+\]', '', sentence))
+            if not numbers:
+                continue
+
+            figures += len(numbers)
+            if not cited:
+                uncited += len(numbers)
+
+            haystack = " ".join(source_texts.get(sid, "") for sid in cited) or corpus
+            for n in numbers:
+                if not (_corroborated(n, haystack) or _corroborated(n, corpus)):
+                    unsupported += 1
+                if n in seen:
+                    repeated += 1
+                local.add(n)
+
+        seen |= local
+        out.append(SectionMetrics(
+            title=title.strip(),
+            words=len(body.split()),
+            figures=figures,
+            uncited=uncited,
+            unsupported=unsupported,
+            repeated=repeated,
+        ))
+
+    return out
+
+
+def rubric_score(metrics: List[SectionMetrics]) -> Tuple[int, List[str]]:
+    """Turn the measurements into a 1-10 score with the reasons for every point lost.
+
+    An unanchored "be harsh" instruction made the model park on 3-4 whatever the
+    report looked like, so the number carried no information. These deductions are
+    reproducible: the same report always scores the same, and the caller can print
+    exactly which threshold cost it a point.
+    """
+    figures = sum(m.figures for m in metrics)
+    words = sum(m.words for m in metrics)
+    if not figures or not words:
+        return 1, ["report contains no sourced figures"]
+
+    cite_rate = 1.0 - sum(m.uncited for m in metrics) / figures
+    support_rate = 1.0 - sum(m.unsupported for m in metrics) / figures
+    repeat_rate = sum(m.repeated for m in metrics) / figures
+    density = 100.0 * figures / words
+
+    score, reasons = 10, []
+
+    for floor, penalty in ((0.70, 3), (0.85, 2), (0.95, 1)):
+        if cite_rate < floor:
+            score -= penalty
+            reasons.append(f"-{penalty} citation coverage {cite_rate:.0%}")
+            break
+
+    for floor, penalty in ((0.60, 3), (0.75, 2), (0.90, 1)):
+        if support_rate < floor:
+            score -= penalty
+            reasons.append(f"-{penalty} only {support_rate:.0%} of figures corroborated")
+            break
+
+    for floor, penalty in ((0.5, 3), (1.0, 2), (1.5, 1)):
+        if density < floor:
+            score -= penalty
+            reasons.append(f"-{penalty} {density:.1f} figures per 100 words")
+            break
+
+    for ceiling, penalty in ((0.35, 3), (0.20, 2), (0.10, 1)):
+        if repeat_rate > ceiling:
+            score -= penalty
+            reasons.append(f"-{penalty} {repeat_rate:.0%} of figures repeat an earlier section")
+            break
+
+    return max(1, score), reasons
+
+
+def audit_node(state: AgentState):
+    """Measure the report, then ask the model only what measurement cannot answer.
+
+    Scoring and weak-section triage share one LLM call — they used to be two round
+    trips over the same text — and the score itself is no longer part of that call.
     """
     iteration = state.get("iteration", 1)
     print(f"\n[AUDIT] Scoring report and triaging weak sections - iteration {iteration}...")
     raw = state.get("raw_report", "")
+    source_texts = {int(k): v for k, v in (state.get("source_texts") or {}).items()}
+    source_index = {int(k): v for k, v in (state.get("source_index") or {}).items()}
 
-    import re
-    sections = re.findall(r'##\s+SECTION:\s*(.+?)\n(.{0,300})', raw, re.DOTALL)
-    preview = "\n\n".join(
-        f"SECTION: {title.strip()}\n{body.strip()[:300]}" for title, body in sections
+    metrics = measure_sections(raw, source_texts, source_index)
+    score, reasons = rubric_score(metrics)
+
+    measured = "\n".join(
+        f"- \"{m.title}\": {m.words} words, {m.figures} figures, "
+        f"{m.cite_rate:.0%} cited, {m.support_rate:.0%} corroborated, "
+        f"{m.density:.1f} figures/100 words"
+        + (f" | FAILS: {'; '.join(m.failings())}" if m.failings() else "")
+        for m in metrics
+    )
+    bodies = "\n\n".join(
+        f"SECTION: {title.strip()}\n{body.strip()[:1200]}"
+        for title, body in SECTION_RE.findall(raw)
     ) or raw[:3000]
 
-    emit(state, "audit", f"Reviewing {len(sections)} sections for weak arguments")
+    emit(state, "audit", f"Reviewing {len(metrics)} sections for weak arguments")
     audit = _structured_invoke(ReportAudit, [
         SystemMessage(content=CRITIC_PROMPT),
-        HumanMessage(content=f"TOPIC: {state['topic']}\n\nREPORT SECTIONS:\n{preview}")
+        HumanMessage(content=(
+            f"TOPIC: {state['topic']}\n\n"
+            f"MEASURED (already verified against the sources):\n{measured}\n\n"
+            f"REPORT SECTIONS:\n{bodies}"
+        ))
     ])
     if audit is None:
-        # All keys rate limited — approve rather than block the export.
-        print("  [AUDIT] All keys rate limited, auto-approving to proceed to export...")
-        audit = ReportAudit(score=8, gaps=[], follow_up_queries=[], verdict="APPROVED")
+        print("  [AUDIT] All keys rate limited, using measured score only...")
+        audit = ReportAudit(score=score, gaps=[], follow_up_queries=[], verdict="APPROVED")
 
-    print(f"  Score: {audit.score}/10 | {audit.verdict}")
+    flagged = {w.section.strip(): w for w in audit.weak_sections}
+    for m in metrics:
+        if m.failings() and m.title not in flagged:
+            flagged[m.title] = SectionChallenge(
+                section=m.title,
+                problem="No specifics",
+                challenge=f"This section measures badly ({'; '.join(m.failings())}). "
+                          "Replace vague passages with figures the evidence carries.",
+            )
+    weak = list(flagged.values())[:MAX_WEAK_SECTIONS]
+
+    audit = audit.model_copy(update={
+        "score": score,
+        "verdict": "NEEDS_MORE_RESEARCH" if score < 6 and audit.follow_up_queries else "APPROVED",
+        "weak_sections": weak,
+    })
+
+    print(f"  Score: {audit.score}/10 | {audit.verdict}"
+          + (f" ({', '.join(reasons)})" if reasons else " (no deductions)"))
     if audit.gaps:
         print(f"  Gaps: {', '.join(audit.gaps[:2])}")
-    for weak in audit.weak_sections[:2]:
-        print(f"  Weak: {weak.section[:60]} — {weak.problem}")
+    for w in weak:
+        print(f"  Weak: {w.section[:60]} — {w.problem}")
+    if not weak:
+        print("  No section failed review; skipping rewrite.")
 
     emit(state, "audit",
-         f"Scored {audit.score}/10, {len(audit.weak_sections[:2])} section(s) flagged for rewrite")
+         f"Scored {audit.score}/10, {len(weak)} section(s) flagged for rewrite")
     return {
         "quality": audit,
-        "weak_sections": audit.weak_sections[:2],
+        "weak_sections": weak,
         "iteration": iteration + 1,
     }
 
@@ -1334,7 +1513,7 @@ def targeted_rewrite_node(state: AgentState):
     # Locate each flagged section first, so the rewrites themselves can run
     # concurrently instead of editing the report one after another.
     jobs = []
-    for challenge in weak[:2]:
+    for challenge in weak[:MAX_WEAK_SECTIONS]:
         sec_title = challenge.section.strip()
         sec_match = re.search(
             rf'(##\s+SECTION:\s*{re.escape(sec_title)}\n)(.*?)(?=\n##\s+SECTION:|\n##\s+SYNTHESIS|\Z)',

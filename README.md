@@ -109,8 +109,8 @@ User Input (Topic)
 **Why LangGraph?**
 Simple LLM chains go A→B→C with no way back. Research is iterative — sometimes you need to loop back and dig deeper. LangGraph enables conditional loops, state persistence, and human-in-the-loop checkpoints that aren't possible with basic chaining.
 
-**Audit + Targeted Rewriter**
-One audit call both scores the report and names its 2 weakest sections — flagging "safe explanation with no critical judgment", "repetition of a point from another section", "missing contrarian angle", or "no specifics (claims without hard numbers or dates)". A targeted rewriter then fixes only those sections, both at once. Scoring and triage used to be two serial calls over the same text; merging them and parallelising the rewrites removes three round trips from every run.
+**Measured Audit + Targeted Rewriter**
+The score is computed, not guessed. Before the audit call, every section is measured against the crawled sources — citation coverage, how many figures a cited source actually corroborates, figures per 100 words, and figures recycled from an earlier section — and a fixed rubric turns those counts into a 1-10 score, printing the deduction behind every lost point. The LLM is then asked only what measurement cannot answer: which sections have a reasoning problem, and which data points the sources simply do not contain. It is free to flag none; sections that fail the measured thresholds are added automatically. Previously the critic scored prose it had never checked against a source and was ordered to "be harsh" and always name exactly 2 weak sections, so it parked around 3-4/10 and invented faults in sections that were fine. A targeted rewriter then fixes only the flagged sections, all at once.
 
 **Refine loop only when it is worth it**
 A refine pass re-crawls and rewrites the whole report (~7 more LLM calls), so it now runs only when the critic asks for more research *and* the measured grounding is below `REFINE_GROUNDING_FLOOR`. A report that is already well-sourced exports immediately.
@@ -137,7 +137,7 @@ Every completed research run is chunked and stored in ChromaDB. Future runs on r
 - Multi-agent pipeline with 7 specialized nodes
 - Web UI with real-time progress tracking (FastAPI + vanilla JS)
 - REST API for programmatic access
-- Single-call audit that scores the report and triages its weakest sections
+- Measured audit: the quality score is computed from the sources, not guessed by a model
 - Self-correcting quality loop, skipped when grounding is already high
 - Human-in-the-loop approval checkpoint (remove queries before starting)
 - Grounded citations — every claim tied to a real crawled URL
@@ -178,6 +178,7 @@ STRIP_UNVERIFIED=1         # delete sentences whose figures no source supports
 MAX_STRIP_RATIO=0.4        # never delete more than this share of a paragraph
 REFINE_GROUNDING_FLOOR=0.75 # skip the refine loop when grounding is at least this
 MAX_REFINE_ITERATIONS=2    # hard cap on refine rounds
+MAX_WEAK_SECTIONS=3        # most sections one audit may send back for rewriting
 KEY_COOLDOWN_SECONDS=60    # how long a rate-limited key is skipped for
 MAX_RATE_LIMIT_WAIT=90     # longest wait for a cooling key before trying Together.ai
 MAX_TOTAL_RATE_LIMIT_WAIT=300  # total waiting budget for one LLM call
