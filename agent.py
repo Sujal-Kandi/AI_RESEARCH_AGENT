@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import List, Dict, Optional, Tuple
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 from fpdf import FPDF
@@ -39,11 +39,12 @@ if os.path.exists(_secret_path):
                     os.environ[_k.strip()] = _v.strip()
 
 # ── TOOLS ─────────────────────────────────────────────────────────────────────
-def get_web_search():
+def get_web_search(include_domains: Optional[List[str]] = None):
     return TavilySearch(
         max_results=6,
         tavily_api_key=os.getenv("TAVILY_API_KEY"),
         include_raw_content=True,
+        include_domains=include_domains or [],
     )
 
 def make_llm(key: str):
@@ -329,7 +330,13 @@ Generate 10-15 search queries covering:
 - Key figures, engineers, decision-makers
 - Comparative analysis and bottlenecks
 - Failures, weaknesses, and overlooked angles
-Every query must target a specific data point. No generic queries."""
+Every query must target a specific data point. No generic queries.
+
+At least three queries must go after the document the numbers originally came from,
+not an article describing it. Name the artefact in the query — annual report, 10-K or
+other regulator filing, court judgment, official statistics release, standards document,
+technical specification, arXiv paper, transcript. A retelling loses figures and gains
+errors; the filing has the table."""
 
 CRITIC_PROMPT = """You are a research quality auditor. Grounding, citation coverage,
 fact density and repetition have already been measured against the crawled sources and are
@@ -427,6 +434,17 @@ def source_tier(url: str) -> int:
 # keeps citation numbers stable regardless of which request finishes first.
 CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "5"))
 DEEP_FETCH_LIMIT = int(os.getenv("DEEP_FETCH_LIMIT", "12"))
+# How many primary/official sources a round should land before we accept the
+# crawl. Below this the report is built entirely on retellings of the numbers.
+PRIMARY_FLOOR = int(os.getenv("PRIMARY_FLOOR", "5"))
+# Domains the top-up round is restricted to. Broad enough that most topics hit
+# something, narrow enough that everything returned is an original record.
+PRIMARY_DOMAINS = [
+    "sec.gov", "annualreports.com", "arxiv.org", "nasa.gov", "nist.gov",
+    "europa.eu", "who.int", "imf.org", "worldbank.org", "oecd.org", "bis.org",
+    "rbi.org.in", "npci.org.in", "gov.uk", "congress.gov", "courtlistener.com",
+    "ntsb.gov", "faa.gov", "bls.gov", "census.gov", "eur-lex.europa.eu",
+]
 
 def emit(state, stage: str, detail: str = "", done=None, total=None):
     """Report real pipeline progress to whoever is watching (the API, the CLI).
@@ -442,14 +460,28 @@ def emit(state, stage: str, detail: str = "", done=None, total=None):
     except Exception:
         pass
 
-def _search_one(query: str):
+def _search_one(query: str, include_domains: Optional[List[str]] = None):
     """Run one search query. Never raises — a dead query must not kill the crawl."""
     try:
-        response = get_web_search().invoke(query)
+        response = get_web_search(include_domains).invoke(query)
         return response.get("results", []) if isinstance(response, dict) else response
     except Exception as e:
         print(f"  Query failed: {query[:50]} — {e}")
         return []
+
+def interleave(results_per_query: List[list]) -> list:
+    """Take one result from each query in turn instead of draining query 1 first.
+
+    The deep-fetch budget is small, and results used to be consumed in query
+    order, so the first two queries ate it and the angles the other twelve
+    queries were written to cover were never read in full.
+    """
+    ordered = []
+    for rank in range(max((len(r) for r in results_per_query), default=0)):
+        for items in results_per_query:
+            if rank < len(items):
+                ordered.append(items[rank])
+    return ordered
 
 def crawler_node(state: AgentState):
     queries = state['plan'].queries
@@ -478,9 +510,27 @@ def crawler_node(state: AgentState):
             finished += 1
             emit(state, "crawler", "Searching the web", finished, len(queries))
 
+    # Top up with original records when the round came back as mostly commentary.
+    primary_found = sum(
+        1 for items in results_per_query for r in items
+        if source_tier((r.get("url") or "")) == 0
+    )
+    if primary_found < PRIMARY_FLOOR and queries:
+        targeted = queries[:3]
+        print(f"  Only {primary_found} primary sources; re-running {len(targeted)} "
+              "queries against official domains...")
+        emit(state, "crawler", "Looking for original records", 0, len(targeted))
+        with ThreadPoolExecutor(max_workers=len(targeted)) as pool:
+            futures = [pool.submit(_search_one, q, PRIMARY_DOMAINS) for q in targeted]
+            for done_n, fut in enumerate(as_completed(futures), 1):
+                results_per_query.append(fut.result())
+                emit(state, "crawler", "Looking for original records", done_n, len(targeted))
+
     seen_urls = set(source_index.values())
     new_sources = []  # (sid, url, title, snippet)
+    per_query_sources: List[list] = []
     for items in results_per_query:
+        from_this_query = []
         for r in items:
             url = (r.get("url") or "").strip()
             if not url or url in seen_urls:
@@ -490,11 +540,16 @@ def crawler_node(state: AgentState):
             source_index[sid] = url
             title = (r.get("title") or url)[:80]
             source_titles[sid] = title
-            new_sources.append((sid, url, title, (r.get("raw_content") or r.get("content") or "")[:600]))
+            entry = (sid, url, title, (r.get("raw_content") or r.get("content") or "")[:600])
+            new_sources.append(entry)
+            from_this_query.append(entry)
+        per_query_sources.append(from_this_query)
 
     # Deep fetch the most authoritative sources first — official/primary domains
     # are where the hard numbers live, so they get the full-page fetch budget.
-    ranked = sorted(new_sources, key=lambda s: source_tier(s[1]))
+    # Within a tier, take one source per query in turn so the budget covers the
+    # whole plan rather than the first query's results.
+    ranked = sorted(interleave(per_query_sources), key=lambda s: source_tier(s[1]))
     skip_markers = ("youtube.com", "twitter.com", "linkedin.com", ".pdf", "reddit.com")
     # Fetches fail often (paywalls, timeouts), so try extras to actually land
     # DEEP_FETCH_LIMIT pages of full text.
@@ -528,8 +583,15 @@ def crawler_node(state: AgentState):
         for sid, url, title, _ in new_sources
     ]
 
-    print(f"  {len(source_index)} sources indexed, {deep_fetch_count} deep fetched")
-    emit(state, "crawler", f"{len(source_index)} sources indexed, {deep_fetch_count} read in full")
+    primary_read = sum(
+        1 for sid, url, _, _ in new_sources
+        if source_tier(url) == 0 and sid in fetched and fetched[sid]
+    )
+    print(f"  {len(source_index)} sources indexed, {deep_fetch_count} deep fetched "
+          f"({primary_read} primary/official)")
+    emit(state, "crawler",
+         f"{len(source_index)} sources indexed, {deep_fetch_count} read in full "
+         f"({primary_read} official)")
 
     # ── GUARD: stop before any LLM calls if web returned nothing useful ───────
     if len(source_index) < 3:

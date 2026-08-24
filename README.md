@@ -112,6 +112,9 @@ Simple LLM chains go A→B→C with no way back. Research is iterative — somet
 **Measured Audit + Targeted Rewriter**
 The score is computed, not guessed. Before the audit call, every section is measured against the crawled sources — citation coverage, how many figures a cited source actually corroborates, figures per 100 words, and figures recycled from an earlier section — and a fixed rubric turns those counts into a 1-10 score, printing the deduction behind every lost point. The LLM is then asked only what measurement cannot answer: which sections have a reasoning problem, and which data points the sources simply do not contain. It is free to flag none; sections that fail the measured thresholds are added automatically. Previously the critic scored prose it had never checked against a source and was ordered to "be harsh" and always name exactly 2 weak sections, so it parked around 3-4/10 and invented faults in sections that were fine. A targeted rewriter then fixes only the flagged sections, all at once.
 
+**Crawl aimed at original records**
+A report is only as good as what it read, and search engines return commentary far more readily than the document the numbers came from. Three of the planned queries are written to hunt the artefact itself — a 10-K, a court judgment, an official statistics release, an arXiv paper — and if a round still lands fewer than `PRIMARY_FLOOR` primary sources, the top queries are re-run restricted to official domains. The full-page fetch budget then takes one result per query in turn before any query's second result, so it covers every angle in the plan instead of being eaten by the first two queries.
+
 **Refine loop only when it is worth it**
 A refine pass re-crawls and rewrites the whole report (~7 more LLM calls), so it now runs only when the critic asks for more research *and* the measured grounding is below `REFINE_GROUNDING_FLOOR`. A report that is already well-sourced exports immediately.
 
@@ -144,7 +147,7 @@ Every completed research run is chunked and stored in ChromaDB. Future runs on r
 - Hallucination detection and removal
 - Automatic API key rotation with Together.ai fallback
 - Long-term memory across research sessions
-- Deep web content fetching (full pages, not just snippets)
+- Deep web content fetching (full pages, not just snippets), biased toward primary sources
 - Professional PDF output with cover page, TOC, comparison tables, timelines
 
 ---
@@ -167,6 +170,7 @@ Optional tuning (defaults shown):
 ```
 CRAWL_WORKERS=5            # search queries run concurrently
 DEEP_FETCH_LIMIT=12        # full-page fetches per round (also run concurrently)
+PRIMARY_FLOOR=5            # below this many official sources, re-search official domains
 SECTION_MIN=3              # shortest report the pipeline will produce
 SECTION_MAX=9              # longest report the pipeline will produce
 EVIDENCE_PER_SECTION=9000  # usable source text per section; caps how long a report can get
