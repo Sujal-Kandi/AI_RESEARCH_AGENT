@@ -38,7 +38,7 @@ if os.path.exists(_secret_path):
                 if not os.environ.get(_k.strip()):
                     os.environ[_k.strip()] = _v.strip()
 
-# ── TOOLS ─────────────────────────────────────────────────────────────────────
+# ── TOOLS
 def get_web_search(include_domains: Optional[List[str]] = None):
     return TavilySearch(
         max_results=6,
