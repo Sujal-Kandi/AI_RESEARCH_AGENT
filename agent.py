@@ -1,9 +1,13 @@
 import os
+import re
 import sqlite3
 import requests
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 from fpdf import FPDF
@@ -35,11 +39,12 @@ if os.path.exists(_secret_path):
                     os.environ[_k.strip()] = _v.strip()
 
 # ── TOOLS ─────────────────────────────────────────────────────────────────────
-def get_web_search():
+def get_web_search(include_domains: Optional[List[str]] = None):
     return TavilySearch(
         max_results=6,
         tavily_api_key=os.getenv("TAVILY_API_KEY"),
         include_raw_content=True,
+        include_domains=include_domains or [],
     )
 
 def make_llm(key: str):
@@ -56,24 +61,41 @@ class RateLimitExhausted(Exception):
 _groq_keys = []
 _key_index = 0
 _using_fallback = False
-_tried_keys: set = set()
+# Key index -> monotonic timestamp when that key is expected to be usable again.
+# A rate-limited key is remembered as cooling rather than permanently burned, so
+# a long run can come back to it once its per-minute window resets.
+_key_cooldowns: Dict[int, float] = {}
 llm = None
+
+# Longest we will sit waiting for a cooling key before giving up on Groq, and
+# the total waiting budget for a single invocation.
+MAX_RATE_LIMIT_WAIT = float(os.getenv("MAX_RATE_LIMIT_WAIT", "90"))
+MAX_TOTAL_RATE_LIMIT_WAIT = float(os.getenv("MAX_TOTAL_RATE_LIMIT_WAIT", "300"))
+DEFAULT_COOLDOWN = float(os.getenv("KEY_COOLDOWN_SECONDS", "60"))
+
+# Guards every mutation of the globals above so parallel section writers cannot
+# rotate past each other's keys or clobber the active client.
+_llm_lock = threading.RLock()
+# Bumped on every rotation; lets a thread detect that another thread already
+# rotated away from the client it failed on.
+_llm_generation = 0
 
 def _init_llm():
     """Initialize LLM on first use, not at import time."""
     global _groq_keys, llm
-    if not _groq_keys:
-        _groq_keys = [k.strip() for k in [
-            os.getenv("GROQ_API_KEY", ""),
-            os.getenv("GROQ_API_KEY_2", ""),
-            os.getenv("GROQ_API_KEY_3", ""),
-            os.getenv("GROQ_API_KEY_4", ""),
-            os.getenv("GROQ_API_KEY_5", ""),
-        ] if k and k.strip()]
-        print(f"  [INIT] Loaded {len(_groq_keys)} Groq keys")
-    if llm is None and _groq_keys:
-        llm = make_llm(_groq_keys[0])
-        print(f"  [INIT] LLM initialized with key index 0")
+    with _llm_lock:
+        if not _groq_keys:
+            _groq_keys = [k.strip() for k in [
+                os.getenv("GROQ_API_KEY", ""),
+                os.getenv("GROQ_API_KEY_2", ""),
+                os.getenv("GROQ_API_KEY_3", ""),
+                os.getenv("GROQ_API_KEY_4", ""),
+                os.getenv("GROQ_API_KEY_5", ""),
+            ] if k and k.strip()]
+            print(f"  [INIT] Loaded {len(_groq_keys)} Groq keys")
+        if llm is None and _groq_keys:
+            llm = make_llm(_groq_keys[0])
+            print(f"  [INIT] LLM initialized with key index 0")
 
 def make_together_llm():
     together_key = os.getenv("TOGETHER_API_KEY")
@@ -100,65 +122,120 @@ def _is_rate_limit_error(e: Exception) -> bool:
         or "try again" in e_str
     )
 
-def llm_invoke_with_rotation(messages):
-    """Invoke LLM, rotating Groq keys on rate limit, then falling back to Together.ai."""
-    global llm, _key_index, _using_fallback, _tried_keys
-    _init_llm()  # ensure LLM is initialized
+def _retry_after_seconds(error: Exception) -> float:
+    """How long the provider says to wait. Groq puts it in the 429 message."""
+    if error is None:
+        return DEFAULT_COOLDOWN
+    import re
+    match = re.search(r"try again in ([\d.]+)\s*(ms|m|s)\b", str(error), re.I)
+    if not match:
+        return DEFAULT_COOLDOWN
+    value, unit = float(match.group(1)), match.group(2).lower()
+    seconds = value / 1000 if unit == "ms" else value * 60 if unit == "m" else value
+    return min(max(seconds, 1.0), 600.0)
 
-    if _using_fallback:
+def _structured_invoke(schema, messages):
+    """Structured-output call that shares the rotation/backoff path. None if exhausted."""
+    _init_llm()
+    try:
+        return llm_invoke_with_rotation(messages, structured_output=schema)
+    except RateLimitExhausted:
+        return None
+
+def _current_client():
+    """Snapshot the active client and the generation it belongs to."""
+    with _llm_lock:
+        return llm, _llm_generation
+
+def _advance_key(failed_generation: int, error: Exception = None):
+    """Move to the next usable key/provider unless another thread already did.
+
+    Returns the number of seconds the caller should sleep before retrying, or
+    None when nothing is left to try. The sleep happens in the caller so this
+    never holds the lock while waiting.
+    """
+    global llm, _key_index, _using_fallback, _llm_generation
+    with _llm_lock:
+        if _llm_generation != failed_generation:
+            # Another thread already rotated; just retry with the new client.
+            return 0.0
+        if _using_fallback:
+            return None
+
+        now = time.monotonic()
+        _key_cooldowns[_key_index] = now + _retry_after_seconds(error)
+
+        ready = [i for i in range(len(_groq_keys)) if _key_cooldowns.get(i, 0.0) <= now]
+        if ready:
+            _key_index = ready[0]
+            llm = make_llm(_groq_keys[_key_index])
+            _llm_generation += 1
+            print(f"  [KEY ROTATION] Switched to Groq key {_key_index + 1}")
+            return 1.0
+
+        # Every key is cooling. Waiting for the soonest one is almost always
+        # faster than failing the whole run — a Groq TPM window is ~60s.
+        soonest = min(range(len(_groq_keys)), key=lambda i: _key_cooldowns.get(i, 0.0))
+        wait = max(0.0, _key_cooldowns.get(soonest, 0.0) - now)
+        if wait <= MAX_RATE_LIMIT_WAIT:
+            _key_index = soonest
+            llm = make_llm(_groq_keys[soonest])
+            _llm_generation += 1
+            print(f"  [RATE LIMIT] All {len(_groq_keys)} Groq keys cooling; "
+                  f"waiting {wait:.0f}s for key {soonest + 1}")
+            return wait
+
+        print("  [RATE LIMIT] All Groq keys exhausted, switching to Together.ai...")
         try:
-            return llm.invoke(messages)
+            llm = make_together_llm()
+        except RuntimeError:
+            return None  # No Together.ai key configured at all
+        except Exception as fallback_e:
+            if "401" in str(fallback_e) or "invalid" in str(fallback_e).lower():
+                print("  [TOGETHER AUTH FAILED] Invalid API key — check TOGETHER_API_KEY in .env")
+            raise fallback_e
+        _using_fallback = True
+        _key_cooldowns.clear()
+        _llm_generation += 1
+        return 2.0
+
+def llm_invoke_with_rotation(messages, structured_output=None):
+    """Invoke LLM, rotating Groq keys on rate limit, then falling back to Together.ai.
+
+    Safe to call from multiple threads: only rotation touches shared state, and
+    the network call itself happens outside the lock so sections run in parallel.
+    """
+    _init_llm()  # ensure LLM is initialized
+    waited = 0.0
+
+    while True:
+        client, generation = _current_client()
+        try:
+            if structured_output is not None:
+                return client.with_structured_output(structured_output).invoke(messages)
+            return client.invoke(messages)
         except Exception as e:
-            if _is_rate_limit_error(e):
+            if not _is_rate_limit_error(e):
+                print(f"  [LLM ERROR] {type(e).__name__}: {e}")
+                raise
+            wait = _advance_key(generation, e)
+            if wait is None or waited + wait > MAX_TOTAL_RATE_LIMIT_WAIT:
                 raise RateLimitExhausted(
                     "All API keys are currently rate limited. Please try again in 5 minutes."
                 )
-            print(f"  [TOGETHER ERROR] {e}")
-            raise
-
-    while True:
-        try:
-            return llm.invoke(messages)
-        except Exception as e:
-            if _is_rate_limit_error(e):
-                _tried_keys.add(_key_index)
-                next_index = next(
-                    (i for i in range(len(_groq_keys)) if i not in _tried_keys),
-                    None
-                )
-                if next_index is not None:
-                    _key_index = next_index
-                    llm = make_llm(_groq_keys[_key_index])
-                    print(f"  [KEY ROTATION] Switched to Groq key {_key_index + 1}")
-                    time.sleep(3)
-                else:
-                    print("  [RATE LIMIT] All Groq keys exhausted, switching to Together.ai...")
-                    try:
-                        llm = make_together_llm()
-                        _using_fallback = True
-                        _tried_keys = set()  # reset for future use
-                        time.sleep(2)
-                    except RuntimeError:
-                        # No Together.ai key configured at all
-                        raise RateLimitExhausted(
-                            "All API keys are currently rate limited. Please try again in 5 minutes."
-                        )
-                    except Exception as fallback_e:
-                        if "401" in str(fallback_e) or "invalid" in str(fallback_e).lower():
-                            print("  [TOGETHER AUTH FAILED] Invalid API key — check TOGETHER_API_KEY in .env")
-                        raise fallback_e
-            else:
-                print(f"  [LLM ERROR] {type(e).__name__}: {e}")
-                raise
+            waited += wait
+            time.sleep(wait)
 
 def _rotate_key():
     """Rotate to next available Groq API key."""
-    global llm, _key_index, _using_fallback
+    global llm, _key_index, _llm_generation
     _init_llm()
-    if _using_fallback:
-        return
-    _key_index = (_key_index + 1) % len(_groq_keys)
-    llm = make_llm(_groq_keys[_key_index])
+    with _llm_lock:
+        if _using_fallback:
+            return
+        _key_index = (_key_index + 1) % len(_groq_keys)
+        llm = make_llm(_groq_keys[_key_index])
+        _llm_generation += 1
 # ── PERSISTENCE ───────────────────────────────────────────────────────────────
 conn = sqlite3.connect("research_memory.db", check_same_thread=False)
 memory = SqliteSaver(conn)
@@ -205,11 +282,16 @@ class FinalDossier(BaseModel):
         )
     )
 
+class SectionChallenge(BaseModel):
+    section: str = Field(description="Exact title of the weak section, copied verbatim.")
+    problem: str = Field(description="One of: Safe explanation, Repetition, Missing contrarian, No specifics.")
+    challenge: str = Field(description="One sharp question or missing angle the rewrite must address.")
+
 class QualityVerdict(BaseModel):
-    score: int = Field(description="Quality score 1-10. 8+ means publish-ready.")
+    score: int = Field(default=5, description="Quality score 1-10, overwritten by the measured rubric.")
     gaps: List[str] = Field(default_factory=list, description="Specific missing data points. Empty list if none.")
-    follow_up_queries: List[str] = Field(default_factory=list, description="New queries to fill gaps. Empty list if score >= 8.")
-    verdict: str = Field(description="APPROVED or NEEDS_MORE_RESEARCH")
+    follow_up_queries: List[str] = Field(default_factory=list, description="One query per gap. Empty list if no gaps.")
+    verdict: str = Field(default="APPROVED", description="APPROVED or NEEDS_MORE_RESEARCH")
 
     @field_validator("gaps", "follow_up_queries", mode="before")
     @classmethod
@@ -218,6 +300,13 @@ class QualityVerdict(BaseModel):
             return [v] if v.strip() else []
         return v or []
 
+class ReportAudit(QualityVerdict):
+    """Scoring and weak-section triage in one call instead of two round trips."""
+    weak_sections: List[SectionChallenge] = Field(
+        default_factory=list,
+        description="Sections with a reasoning problem you can point to. Empty if none are weak.",
+    )
+
 class AgentState(Dict):
     topic: str
     plan: ResearchPlan
@@ -225,11 +314,13 @@ class AgentState(Dict):
     raw_report: str
     source_index: Dict[int, str]
     source_titles: Dict[int, str]
+    source_texts: Dict[int, str]  # per-source crawled text, used for retrieval + verification
     memory_context: str
     quality: QualityVerdict
+    weak_sections: List[SectionChallenge]  # from the audit, consumed by the rewriter
+    grounding: float  # share of factual sentences corroborated by source text
     iteration: int
     research_rounds: int
-    challenge_notes: str  # feedback from section_challenger for targeted rewrite
 
 # ── SYSTEM PROMPTS ─────────────────────────────────────────────────────────────
 STRATEGIST_PROMPT = """You are an elite intelligence analyst. Build a comprehensive research plan.
@@ -239,48 +330,31 @@ Generate 10-15 search queries covering:
 - Key figures, engineers, decision-makers
 - Comparative analysis and bottlenecks
 - Failures, weaknesses, and overlooked angles
-Every query must target a specific data point. No generic queries."""
+Every query must target a specific data point. No generic queries.
 
-ARCHITECT_PROMPT = """You are a world-class investigative analyst writing a long-form research report.
+At least three queries must go after the document the numbers originally came from,
+not an article describing it. Name the artefact in the query — annual report, 10-K or
+other regulator filing, court judgment, official statistics release, standards document,
+technical specification, arXiv paper, transcript. A retelling loses figures and gains
+errors; the filing has the table."""
 
-CITATION RULES:
-1. A SOURCE INDEX will be provided: [1] https://... - "Title"
-2. Cite retrieved facts inline using [N] notation in narratives.
-3. Every key_fact MUST have a source_id from the index.
-4. NEVER invent source IDs. NEVER cite a number not in the index.
-5. NEVER fabricate quotes or statistics and attribute them to a source.
+CRITIC_PROMPT = """You are a research quality auditor. Grounding, citation coverage,
+fact density and repetition have already been measured against the crawled sources and are
+given to you below — do not re-judge them, and do not guess at them from the prose.
 
-WRITING RULES - CRITICAL:
-1. You are an expert. USE YOUR OWN DEEP KNOWLEDGE to write rich, detailed narratives.
-2. Retrieved data gives you grounded facts to cite. Your knowledge fills the depth.
-3. Each chapter narrative MUST be at least 300 words. No exceptions.
-4. Write like a senior engineer explaining to another engineer - specific, technical, opinionated.
-5. Show tradeoffs, engineering decisions, real-world implications.
-6. MINIMUM 5 chapters. Each on its own distinct angle.
-7. Executive summary MUST be at least 150 words covering key findings and strategic implications.
-8. key_findings must be 5 sentences each with a hard number or specific fact.
+Your job is the part measurement cannot do: read the sections and name the ones with a
+reasoning problem. Flag a section only when you can point to the sentence that fails.
+Flagging nothing is a valid and common answer — do not manufacture a fault to fill the list.
+Classify each problem as one of:
+- "Safe explanation" — describes what happened but never says why, or what it cost
+- "Repetition" — retells an event another section already narrated
+- "Missing contrarian" — accepts the obvious narrative without challenging it
+- "No specifics" — claims without hard numbers, dates, or named decisions
+Each challenge must be one sharp question the rewrite has to answer.
 
-CRITICAL - ANALYTICAL DEPTH RULES (this separates great reports from average ones):
-9. NEVER just describe what happened. Always explain WHY it happened and what a BETTER alternative could have been.
-   BAD: "Nokia failed to adapt to smartphones."
-   GOOD: "Nokia's failure to adopt a touch-first OS was a strategic mistake — the company had the engineering talent but lacked the organizational will. A better path would have been to spin off a dedicated smartphone unit with full autonomy, as Samsung did with its Android division."
-10. CONTRARIAN ANGLE REQUIRED: Every report must include at least one section that challenges the obvious narrative.
-    Ask: Was it entirely the subject's fault? What external forces (ecosystem effects, network effects, competitor moves) made failure almost inevitable regardless of internal decisions?
-11. COMPARISON TABLE REQUIRED: Include at least one structured comparison in the report.
-    Format it as a plain-text table using | separators. Example:
-    | Metric | Subject A | Subject B |
-    | Market Share 2007 | 70% | 3% |
-    | OS Strategy | Symbian | iOS |
-12. TIMELINE REQUIRED: Include a concise chronological timeline of key events in one section.
-    Format: YEAR: Event — consequence
-13. DO NOT repeat the same point across sections. Each section must add NEW insight."""
-
-CRITIC_PROMPT = """You are a ruthless research quality auditor for a top-tier journal.
-Score the report 1-10:
-- 1-4: Generic, missing fundamental facts, reads like a summary
-- 5-7: Decent but narratives are thin, missing key metrics or angles
-- 8-10: Expert-level, specific, narrative-driven, cross-referenced, surprising insights
-Be harsh. Only approve (score >= 8) if a senior researcher would find it valuable."""
+Separately, list gaps: data points the report needs that the sources plainly do not contain
+(a rewrite cannot invent them). Give a follow-up query for each. If the report answers its
+topic with the material it has, return no gaps."""
 
 # ── NODES ──────────────────────────────────────────────────────────────────────
 def strategist_node(state: AgentState):
@@ -288,24 +362,16 @@ def strategist_node(state: AgentState):
     memory_context = query_memory(state["topic"])
     print(f"  Memory: {'found past research' if memory_context else 'starting fresh'}")
 
-    _init_llm()
     memory_hint = f"\n\nPAST RESEARCH (avoid re-searching these):\n{memory_context}" if memory_context else ""
 
-    for attempt in range(len(_groq_keys) * 2 + 1):
-        try:
-            structured_llm = llm.with_structured_output(ResearchPlan)
-            plan = structured_llm.invoke([
-                SystemMessage(content=STRATEGIST_PROMPT),
-                HumanMessage(content=f"Build research plan for: {state['topic']}{memory_hint}")
-            ])
-            break
-        except Exception as e:
-            if _is_rate_limit_error(e):
-                _rotate_key()
-                print(f"  [KEY ROTATION] Switched to key {_key_index + 1}")
-                time.sleep(5)
-            else:
-                raise
+    plan = _structured_invoke(ResearchPlan, [
+        SystemMessage(content=STRATEGIST_PROMPT),
+        HumanMessage(content=f"Build research plan for: {state['topic']}{memory_hint}")
+    ])
+    if plan is None:
+        raise RateLimitExhausted(
+            "All API keys are currently rate limited. Please try again in 5 minutes."
+        )
     print(f"  {len(plan.queries)} queries planned")
     return {
         "plan": plan,
@@ -313,6 +379,7 @@ def strategist_node(state: AgentState):
         "research_rounds": 0,
         "source_index": {},
         "source_titles": {},
+        "source_texts": {},
         "memory_context": memory_context or "",
     }
 
@@ -340,67 +407,196 @@ def deep_fetch(url: str, max_chars: int = 5000) -> str:
     except Exception:
         return ""
 
+# Domains whose numbers can be trusted over a random blog post. Ranked highest
+# when a section has more candidate sources than it can fit in context.
+PRIMARY_SOURCE_MARKERS = (
+    ".gov", ".gov.in", ".gov.uk", ".edu", ".ac.", ".int",
+    "rbi.org", "npci.org", "bis.org", "imf.org", "worldbank.org", "oecd.org",
+    "who.int", "europa.eu", "nature.com", "science.org", "arxiv.org",
+    "ieee.org", "acm.org", "sec.gov", "investor.", "nasa.gov", "nist.gov",
+)
+BLOG_MARKERS = (
+    "medium.com", "substack.com", "blogspot.", "wordpress.", "quora.com",
+    "/blog/", "blog.", "linkedin.com/pulse",
+)
+
+def source_tier(url: str) -> int:
+    """0 = primary/official, 1 = ordinary press, 2 = blog/self-published."""
+    u = url.lower()
+    if any(m in u for m in PRIMARY_SOURCE_MARKERS):
+        return 0
+    if any(m in u for m in BLOG_MARKERS):
+        return 2
+    return 1
+
+# Search and page fetches are network-bound and have no shared state, so they
+# run concurrently. IDs are still assigned in query order afterwards, which
+# keeps citation numbers stable regardless of which request finishes first.
+CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "5"))
+DEEP_FETCH_LIMIT = int(os.getenv("DEEP_FETCH_LIMIT", "12"))
+# How many primary/official sources a round should land before we accept the
+# crawl. Below this the report is built entirely on retellings of the numbers.
+PRIMARY_FLOOR = int(os.getenv("PRIMARY_FLOOR", "5"))
+# Domains the top-up round is restricted to. Broad enough that most topics hit
+# something, narrow enough that everything returned is an original record.
+PRIMARY_DOMAINS = [
+    "sec.gov", "annualreports.com", "arxiv.org", "nasa.gov", "nist.gov",
+    "europa.eu", "who.int", "imf.org", "worldbank.org", "oecd.org", "bis.org",
+    "rbi.org.in", "npci.org.in", "gov.uk", "congress.gov", "courtlistener.com",
+    "ntsb.gov", "faa.gov", "bls.gov", "census.gov", "eur-lex.europa.eu",
+]
+
+def emit(state, stage: str, detail: str = "", done=None, total=None):
+    """Report real pipeline progress to whoever is watching (the API, the CLI).
+
+    The callback lives in state under "_progress" so nothing here depends on a
+    global, and a missing or failing callback can never break a run.
+    """
+    cb = state.get("_progress") if isinstance(state, dict) else None
+    if not cb:
+        return
+    try:
+        cb(stage, detail, done, total)
+    except Exception:
+        pass
+
+def _search_one(query: str, include_domains: Optional[List[str]] = None):
+    """Run one search query. Never raises — a dead query must not kill the crawl."""
+    try:
+        response = get_web_search(include_domains).invoke(query)
+        return response.get("results", []) if isinstance(response, dict) else response
+    except Exception as e:
+        print(f"  Query failed: {query[:50]} — {e}")
+        return []
+
+def interleave(results_per_query: List[list]) -> list:
+    """Take one result from each query in turn instead of draining query 1 first.
+
+    The deep-fetch budget is small, and results used to be consumed in query
+    order, so the first two queries ate it and the angles the other twelve
+    queries were written to cover were never read in full.
+    """
+    ordered = []
+    for rank in range(max((len(r) for r in results_per_query), default=0)):
+        for items in results_per_query:
+            if rank < len(items):
+                ordered.append(items[rank])
+    return ordered
+
 def crawler_node(state: AgentState):
     queries = state['plan'].queries
     rounds = state.get("research_rounds", 0) + 1
-    print(f"\n[CRAWLER] Round {rounds} - {len(queries)} queries...")
+    print(f"\n[CRAWLER] Round {rounds} - {len(queries)} queries ({CRAWL_WORKERS} at a time)...")
 
     source_index: Dict[int, str] = {}
     source_titles: Dict[int, str] = {}
+    source_texts: Dict[int, str] = {}
     for k, v in (state.get("source_index") or {}).items():
         source_index[int(k)] = v
     for k, v in (state.get("source_titles") or {}).items():
         source_titles[int(k)] = v
+    for k, v in (state.get("source_texts") or {}).items():
+        source_texts[int(k)] = v
+
+    emit(state, "crawler", "Searching the web", 0, len(queries))
+    results_per_query = [[] for _ in queries]
+    finished = 0
+    with ThreadPoolExecutor(max_workers=min(CRAWL_WORKERS, max(len(queries), 1))) as pool:
+        futures = {pool.submit(_search_one, q): i for i, q in enumerate(queries)}
+        for fut in as_completed(futures):
+            # Results are stored by query index, so citation numbering stays
+            # stable even though completion order is arbitrary.
+            results_per_query[futures[fut]] = fut.result()
+            finished += 1
+            emit(state, "crawler", "Searching the web", finished, len(queries))
+
+    # Top up with original records when the round came back as mostly commentary.
+    primary_found = sum(
+        1 for items in results_per_query for r in items
+        if source_tier((r.get("url") or "")) == 0
+    )
+    if primary_found < PRIMARY_FLOOR and queries:
+        targeted = queries[:3]
+        print(f"  Only {primary_found} primary sources; re-running {len(targeted)} "
+              "queries against official domains...")
+        emit(state, "crawler", "Looking for original records", 0, len(targeted))
+        with ThreadPoolExecutor(max_workers=len(targeted)) as pool:
+            futures = [pool.submit(_search_one, q, PRIMARY_DOMAINS) for q in targeted]
+            for done_n, fut in enumerate(as_completed(futures), 1):
+                results_per_query.append(fut.result())
+                emit(state, "crawler", "Looking for original records", done_n, len(targeted))
 
     seen_urls = set(source_index.values())
-    # Store (sid, url, snippet) for deep fetch candidates
-    new_sources = []
-    raw_chunks = []
+    new_sources = []  # (sid, url, title, snippet)
+    per_query_sources: List[list] = []
+    for items in results_per_query:
+        from_this_query = []
+        for r in items:
+            url = (r.get("url") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            sid = len(source_index) + 1
+            source_index[sid] = url
+            title = (r.get("title") or url)[:80]
+            source_titles[sid] = title
+            entry = (sid, url, title, (r.get("raw_content") or r.get("content") or "")[:600])
+            new_sources.append(entry)
+            from_this_query.append(entry)
+        per_query_sources.append(from_this_query)
 
-    for i, q in enumerate(queries, 1):
-        print(f"  [{i}/{len(queries)}] {q[:65]}...")
-        try:
-            web_search = get_web_search()
-            response = web_search.invoke(q)
-            items = response.get("results", []) if isinstance(response, dict) else response
-            for r in items:
-                url = (r.get("url") or "").strip()
-                if not url or url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                sid = len(source_index) + 1
-                source_index[sid] = url
-                title = (r.get("title") or url)[:80]
-                source_titles[sid] = title
-                content = (r.get("raw_content") or r.get("content") or "")[:600]
-                new_sources.append((sid, url, title, content))
-        except Exception as e:
-            print(f"  Query failed: {e}")
+    # Deep fetch the most authoritative sources first — official/primary domains
+    # are where the hard numbers live, so they get the full-page fetch budget.
+    # Within a tier, take one source per query in turn so the budget covers the
+    # whole plan rather than the first query's results.
+    ranked = sorted(interleave(per_query_sources), key=lambda s: source_tier(s[1]))
+    skip_markers = ("youtube.com", "twitter.com", "linkedin.com", ".pdf", "reddit.com")
+    # Fetches fail often (paywalls, timeouts), so try extras to actually land
+    # DEEP_FETCH_LIMIT pages of full text.
+    to_fetch = [
+        s for s in ranked if not any(x in s[1] for x in skip_markers)
+    ][:DEEP_FETCH_LIMIT + 6]
 
-    # Deep fetch top 12 most relevant sources for full content
-    print(f"  Deep fetching top sources for full content...")
+    print(f"  Deep fetching {len(to_fetch)} top sources in parallel...")
+    fetched = {}
+    if to_fetch:
+        emit(state, "crawler", "Reading top sources", 0, len(to_fetch))
+        done_fetch = 0
+        with ThreadPoolExecutor(max_workers=len(to_fetch)) as pool:
+            futures = {pool.submit(deep_fetch, s[1], 4000): s[0] for s in to_fetch}
+            for fut in as_completed(futures):
+                fetched[futures[fut]] = fut.result()
+                done_fetch += 1
+                emit(state, "crawler", "Reading top sources", done_fetch, len(to_fetch))
+
     deep_fetch_count = 0
     for sid, url, title, snippet in new_sources:
-        # Skip PDFs, social media, video sites
-        skip = any(x in url for x in ["youtube.com", "twitter.com", "linkedin.com", ".pdf", "reddit.com"])
-        if not skip and deep_fetch_count < 5:
-            full_content = deep_fetch(url, max_chars=2000)
-            if len(full_content) > len(snippet):
-                content = full_content
-                deep_fetch_count += 1
-            else:
-                content = snippet
+        full = fetched.get(sid, "")
+        if len(full) > len(snippet):
+            source_texts[sid] = full
+            deep_fetch_count += 1
         else:
-            content = snippet
-        raw_chunks.append(f"[{sid}] SOURCE: {url}\nTITLE: {title}\n{content}")
+            source_texts[sid] = snippet
 
-    print(f"  {len(source_index)} sources indexed, {deep_fetch_count} deep fetched")
+    raw_chunks = [
+        f"[{sid}] SOURCE: {url}\nTITLE: {title}\n{source_texts.get(sid, '')}"
+        for sid, url, title, _ in new_sources
+    ]
+
+    primary_read = sum(
+        1 for sid, url, _, _ in new_sources
+        if source_tier(url) == 0 and sid in fetched and fetched[sid]
+    )
+    print(f"  {len(source_index)} sources indexed, {deep_fetch_count} deep fetched "
+          f"({primary_read} primary/official)")
+    emit(state, "crawler",
+         f"{len(source_index)} sources indexed, {deep_fetch_count} read in full "
+         f"({primary_read} official)")
 
     # ── GUARD: stop before any LLM calls if web returned nothing useful ───────
-    new_sources_count = len(source_index)
-    if new_sources_count < 3:
+    if len(source_index) < 3:
         raise ValueError(
-            f"Not enough sources found for '{state['topic']}' ({new_sources_count} result(s)). "
+            f"Not enough sources found for '{state['topic']}' ({len(source_index)} result(s)). "
             "This topic may not have enough public information available. "
             "Try a well-known subject, event, company, or technology."
         )
@@ -411,47 +607,190 @@ def crawler_node(state: AgentState):
         "raw_data": combined,
         "source_index": source_index,
         "source_titles": source_titles,
+        "source_texts": source_texts,
         "research_rounds": rounds,
     }
 
-def generate_section_topics(topic: str, raw_data: str) -> List[str]:
-    """Ask the LLM to propose 6-7 section titles tailored to the research topic."""
-    prompt = f"""You are planning a long-form research report on: "{topic}"
+# Phrases the model reaches for when it has nothing concrete to say. Banned in
+# the prompts and stripped from output if they survive.
+SLOP_PHRASES = (
+    "in hindsight",
+    "a better alternative would have been",
+    "this decision was a mistake because",
+    "in conclusion",
+    "it is essential to",
+    "it is important to note",
+    "cannot be overstated",
+    "remarkable journey",
+    "paved the way",
+    "the digital landscape",
+    "a testament to",
+    "delve into",
+    "significant implications for",
+    "as we look to the future",
+)
 
-Based on this topic, propose exactly 7 section titles that together give comprehensive coverage.
+SECTION_WORKERS = int(os.getenv("SECTION_WORKERS", "4"))
+SECTION_MIN_WORDS = int(os.getenv("SECTION_MIN_WORDS", "600"))
+SECTION_MIN = int(os.getenv("SECTION_MIN", "3"))
+SECTION_MAX = int(os.getenv("SECTION_MAX", "9"))
+# Roughly how much usable crawled text one dense section needs behind it.
+EVIDENCE_PER_SECTION = int(os.getenv("EVIDENCE_PER_SECTION", "9000"))
+# Set SECTION_COUNT to pin the report shape; unset, it follows the evidence.
+SECTION_COUNT_OVERRIDE = os.getenv("SECTION_COUNT")
+
+def evidence_section_ceiling(source_texts: Dict[int, str]) -> int:
+    """The most sections the crawled material could fill without padding.
+
+    Deep-fetched pages carry a section on their own; search snippets are
+    counted at their real (small) size, so a thin crawl caps the report even
+    when the topic is broad.
+    """
+    usable = sum(min(len(t or ""), 4000) for t in source_texts.values() if len(t or "") > 300)
+    return max(SECTION_MIN, min(SECTION_MAX, usable // EVIDENCE_PER_SECTION))
+
+def generate_section_topics(topic: str, raw_data: str, ceiling: int) -> List[str]:
+    """Let the topic decide how many sections it needs, capped by the evidence.
+
+    Evidence volume alone is a bad proxy for scope — a one-line question and a
+    decades-long history return similar amounts of text — so the model picks
+    the count from the subject and the crawl only sets the upper bound.
+    """
+    if SECTION_COUNT_OVERRIDE:
+        ceiling = max(1, int(SECTION_COUNT_OVERRIDE))
+        low = ceiling
+    else:
+        low = SECTION_MIN
+    prompt = f"""You are planning a research report on: "{topic}"
+
+First decide how many sections this subject actually needs, between {low} and {ceiling}.
+- A narrow factual question (what a term means, how one mechanism works) needs {low}.
+- A subject spanning decades, several actors, or a rise-and-fall arc needs the upper end.
+- Choose the number the subject warrants, not the maximum allowed.
+
+Then propose that many section titles.
 Rules:
 - Each title must be specific and distinct — no overlap
-- One section MUST be a timeline of key events (title it like "Timeline: [Topic] from [Year] to [Year]")
-- One section MUST be a contrarian/critical analysis (title it like "The Contrarian View: Was Failure Inevitable?" or similar)
-- One section MUST be a comparison (title it like "Comparative Analysis: [A] vs [B]" or similar)
+- Each section must be broad enough to carry {SECTION_MIN_WORDS}+ words of dense analysis on its own
+- If you use 4 or more sections, one MUST be a timeline of key events and one MUST be a contrarian/critical analysis
+- If you use 5 or more sections, one MUST also be a comparison ("Comparative Analysis: [A] vs [B]")
+- Merge narrow angles (origins, peak, decline, legacy) into fewer, deeper sections rather than splitting them
 Return ONLY a Python list of strings, nothing else. Example:
-["Title One", "Title Two", "Title Three", "Title Four", "Title Five", "Title Six", "Title Seven"]"""
+["Title One", "Title Two", "Title Three"]"""
     try:
         response = llm_invoke_with_rotation([HumanMessage(content=prompt)]).content.strip()
         import ast, re
         match = re.search(r'\[.*?\]', response, re.DOTALL)
         if match:
-            return ast.literal_eval(match.group())
+            titles = [t for t in ast.literal_eval(match.group()) if isinstance(t, str) and t.strip()]
+            if titles:
+                return titles[:ceiling]
     except Exception:
         pass
     # Fallback generic sections
     return [
-        "Origins and Early Innovation",
-        "Peak Years and Market Dominance",
+        "Origins, Peak Dominance, and the Foundations of Later Failure",
         "Timeline: Key Events and Turning Points",
+        "The Contrarian View: Was Failure Inevitable?",
         "Disruption and Strategic Missteps",
         "Comparative Analysis: Key Competitors vs Subject",
-        "The Contrarian View: Was Failure Inevitable?",
-        "Legacy and Long-Term Impact",
-    ]
+        "Mechanics: How the Decisive Changes Actually Worked",
+        "Stakeholders: Who Gained, Who Lost, and by How Much",
+        "Counterfactuals the Evidence Supports",
+        "Legacy and Measurable Aftermath",
+    ][:ceiling]
+
+STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "from", "with",
+    "its", "it", "is", "was", "were", "as", "at", "by", "that", "this", "analysis",
+    "section", "view", "key", "vs", "versus", "timeline", "comparative", "case",
+}
+
+def _keywords(text: str) -> List[str]:
+    import re
+    return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in STOPWORDS and len(w) > 2]
+
+def select_sources(section_title: str, topic: str, source_texts: Dict[int, str],
+                   source_titles: Dict[int, str], source_index: Dict[int, str],
+                   limit: int = 12) -> List[int]:
+    """Rank sources by term overlap with the section title, then by source tier.
+
+    Each section gets its own evidence subset, so parallel sections stop
+    converging on whichever handful of facts sat at the top of the shared blob.
+    """
+    terms = set(_keywords(section_title)) | set(_keywords(topic))
+    scored = []
+    for sid, text in source_texts.items():
+        haystack = f"{source_titles.get(sid, '')} {text}".lower()
+        overlap = sum(haystack.count(t) for t in terms)
+        tier = source_tier(source_index.get(sid, ""))
+        # Primary sources win ties; blogs need real overlap to make the cut.
+        scored.append((-(overlap + (6 if tier == 0 else 2 if tier == 1 else 0)), sid))
+    scored.sort()
+    return [sid for _, sid in scored[:limit]]
+
+def allocate_sources(section_titles: List[str], topic: str, source_texts: Dict[int, str],
+                     source_titles: Dict[int, str], source_index: Dict[int, str],
+                     limit: int = 12) -> Dict[int, List[int]]:
+    """Hand each section its own sources, sharing only once the pool runs out.
+
+    Ranking sections independently gave them near-identical top sources, so
+    every section retold the same handful of facts. Claiming sources in
+    round-robin order keeps each section's best match while forcing the others
+    onto material nobody has used yet.
+    """
+    ranked = {
+        i: select_sources(t, topic, source_texts, source_titles, source_index,
+                          limit=limit * 3)
+        for i, t in enumerate(section_titles)
+    }
+    picks: Dict[int, List[int]] = {i: [] for i in ranked}
+    claimed: set = set()
+    for _ in range(limit):
+        for i, order in ranked.items():
+            candidate = next(
+                (s for s in order if s not in claimed and s not in picks[i]),
+                None,
+            )
+            if candidate is None:
+                candidate = next((s for s in order if s not in picks[i]), None)
+            if candidate is not None:
+                picks[i].append(candidate)
+                claimed.add(candidate)
+    return picks
+
+def build_evidence_block(sids: List[int], source_index: Dict[int, str],
+                         source_titles: Dict[int, str], source_texts: Dict[int, str],
+                         chars_per_source: int = 1500) -> str:
+    return "\n\n".join(
+        f"[{sid}] {source_index.get(sid, '')} - \"{source_titles.get(sid, '')}\"\n"
+        f"{(source_texts.get(sid) or '')[:chars_per_source]}"
+        for sid in sids
+    )
+
+def strip_slop(text: str) -> str:
+    """Drop sentences built around filler phrases the prompt already bans."""
+    import re
+    kept = []
+    for para in text.split("\n"):
+        sentences = re.split(r'(?<=[.!?])\s+', para)
+        kept_sentences = [
+            s for s in sentences
+            if not any(p in s.lower() for p in SLOP_PHRASES)
+        ]
+        kept.append(" ".join(kept_sentences) if len(sentences) > 1 else para)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
 
 def architect_node(state: AgentState):
     print("\n[ARCHITECT] Writing research report section by section...")
 
-    top_index = dict(sorted(state["source_index"].items())[:30])
-    top_titles = {k: state["source_titles"].get(k, "") for k in top_index}
+    source_index = {int(k): v for k, v in state["source_index"].items()}
+    source_titles = {int(k): v for k, v in (state.get("source_titles") or {}).items()}
+    source_texts = {int(k): v for k, v in (state.get("source_texts") or {}).items()}
+
+    top_index = dict(sorted(source_index.items())[:30])
     index_str = "\n".join(
-        f"[{sid}] {url} - \"{top_titles.get(sid, '')}\""
+        f"[{sid}] {url} - \"{source_titles.get(sid, '')}\""
         for sid, url in top_index.items()
     )
 
@@ -473,14 +812,22 @@ SOURCES (cite inline as [N] when using specific facts):
 RAW DATA:
 {raw}{memory_section}"""
 
+    banned = "; ".join(f'"{p}"' for p in SLOP_PHRASES)
     section_system = (
         "You are a senior investigative journalist writing for IEEE Spectrum or MIT Technology Review. "
-        "Write dense, expert-level prose. Every paragraph must contain specific facts, dates, numbers, or technical details. "
-        "Never write vague generalities. Never use bullet points. Minimum 450 words per section. Do not truncate."
+        "Write only what the supplied evidence supports. "
+        "Every number, date, name, and percentage you write MUST appear in the EVIDENCE text you were given, "
+        "cited with the [N] of the source it came from. If the evidence does not contain a figure, write about "
+        "what the evidence does say instead of estimating, rounding, or recalling it from memory. "
+        "Attribute claims to the organisation that produced the data (e.g. RBI, NPCI), never to the blogger who repeated it. "
+        f"Never use these filler phrases: {banned}. "
+        "Do not end sections with a summary or conclusion paragraph. Do not restate a point you already made. "
+        "No bullet points. Length follows the evidence — stop when the evidence is used up rather than padding."
     )
 
     # Step 1: Write title, key findings, executive summary
     print("  Writing header (title, findings, summary)...")
+    emit(state, "architect", "Writing title, key findings and summary")
     header = llm_invoke_with_rotation([
         SystemMessage(content=section_system),
         HumanMessage(content=f"""{context_block}
@@ -498,49 +845,87 @@ Write ONLY the following three parts, nothing else:
 5. [Finding with hard fact and citation]
 
 ## EXECUTIVE_SUMMARY
-[200-250 words. Written for a senior decision-maker. Cover what was investigated, the 3 most critical findings with specific metrics, and the strategic implication. Must include real numbers and dates.]""")
+[200-250 words. Written for a senior decision-maker. Cover what was investigated, the 3 most critical findings with specific metrics, and the strategic implication. Every figure must come from the sources above and carry its [N].]""")
     ]).content
+    header = strip_slop(header)
 
-    # Step 2: Write each section independently
-    section_topics = generate_section_topics(topic, raw)
-    sections = []
-    for i, sec_title in enumerate(section_topics, 1):
-        print(f"  Writing section {i}/{len(section_topics)}: {sec_title}...")
+    # Step 2: Write each section independently, in parallel
+    emit(state, "architect", "Planning report sections")
+    ceiling = evidence_section_ceiling(source_texts)
+    section_topics = generate_section_topics(topic, raw, ceiling)
+    print(f"  Planned {len(section_topics)} sections (evidence allows up to {ceiling})")
+    section_sources = allocate_sources(
+        section_topics, topic, source_texts, source_titles, source_index
+    )
+
+    def write_section(index_and_title):
+        i, sec_title = index_and_title
+        # Sections are written concurrently, so each one is told what the others
+        # cover instead of relying on already-written text to avoid overlap.
+        other_titles = "\n".join(
+            f"- {t}" for j, t in enumerate(section_topics) if j != i
+        )
+        sids = section_sources[i]
+        evidence = build_evidence_block(sids, source_index, source_titles, source_texts)
+        print(f"  Writing section {i + 1}/{len(section_topics)}: {sec_title} "
+              f"(sources {', '.join(str(s) for s in sids)})...")
         section = llm_invoke_with_rotation([
             SystemMessage(content=section_system),
-            HumanMessage(content=f"""{context_block}
+            HumanMessage(content=f"""TOPIC: {topic}
+
+EVIDENCE FOR THIS SECTION — this is the only material you may draw facts from:
+{evidence}
 
 Write ONLY this one section. Do not write any other sections.
 
 ## SECTION: {sec_title}
 
-Requirements:
-- Minimum 450 words of flowing prose
-- Include specific dates, metrics, technical decisions, and their consequences
-- Cite sources inline using [N] notation
-- Explain the WHY and HOW, not just the WHAT
-- Show cause-and-effect chains and engineering/business tradeoffs
-- Write as if explaining to a senior engineer or executive who wants depth
+OTHER SECTIONS IN THIS REPORT (written separately — do NOT cover their ground):
+{other_titles}
 
-ANALYTICAL DEPTH — MANDATORY:
-- Do NOT just describe events. After every major fact, add your critical judgment:
-  "This decision was a mistake because...", "A better alternative would have been...", "In hindsight..."
-- Include a CONTRARIAN perspective: challenge the obvious narrative. Ask what external forces
-  (ecosystem lock-in, network effects, competitor moves, market timing) made the outcome
-  partially or fully inevitable — regardless of internal decisions.
-- If this section covers a comparison or timeline, include a plain-text table using | separators
-  OR a year-by-year timeline in format: YEAR: Event — consequence
-- Avoid repeating points already covered in other sections. Add NEW insight only.
+An event that belongs to another section's subject is theirs to narrate. If you need it,
+refer to it in a single clause and move on — never re-tell it.
 
-Begin the section now and write until you have covered the topic thoroughly:""")
+How to write it:
+- Ground every claim in the EVIDENCE above and cite it inline as [N]. A sentence with a
+  number, date, or name and no [N] is not acceptable.
+- If the evidence lacks a figure you want, say what is missing ("the crawled sources do not
+  report X") rather than supplying a number from memory.
+- Explain mechanism: what caused what, who decided it, what it cost, what followed.
+- Where the evidence supports a judgment, make it and say which fact drives it. Where it does
+  not, describe the fact and stop. Do not manufacture a verdict for every paragraph.
+- If this section is a comparison or timeline, build it from evidence rows only:
+  a plain-text table using | separators, or lines of YEAR: Event [N] — consequence.
+- Aim for roughly {SECTION_MIN_WORDS} words, but only as far as the evidence carries you.
+  A shorter, fully-grounded section beats a padded one.
+- No opening throat-clearing, no closing summary. Start on the first substantive fact.
+
+Write the section now:""")
         ]).content
+        section = strip_slop(section)
         # Normalize section header in case model added extra text before it
         if f"## SECTION: {sec_title}" not in section:
             section = f"## SECTION: {sec_title}\n{section}"
-        sections.append(section)
+        return section
+
+    workers = max(1, min(SECTION_WORKERS, len(section_topics)))
+    emit(state, "architect", "Writing sections", 0, len(section_topics))
+    sections = [""] * len(section_topics)
+    written = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(write_section, (i, t)): i
+            for i, t in enumerate(section_topics)
+        }
+        for fut in as_completed(futures):
+            i = futures[fut]
+            sections[i] = fut.result()
+            written += 1
+            emit(state, "architect", f"Wrote: {section_topics[i]}", written, len(section_topics))
 
     # Step 3: Write synthesis
     print("  Writing synthesis...")
+    emit(state, "architect", "Writing cross-section synthesis")
     synthesis = llm_invoke_with_rotation([
         SystemMessage(content=section_system),
         HumanMessage(content=f"""{context_block}
@@ -551,57 +936,390 @@ Write ONLY the final synthesis section.
 [150-200 words. Reveal a non-obvious connection across all the themes covered.
 What does the data collectively suggest that no single section states explicitly?
 Include a contrarian take — something that challenges the dominant narrative of the report.
-Be specific, opinionated, and insightful. No vague conclusions.]""")
+Be specific and opinionated, and tie each claim to the [N] that supports it. No vague conclusions.]""")
     ]).content
+    synthesis = strip_slop(synthesis)
 
     raw_report = header + "\n\n" + "\n\n".join(sections) + "\n\n" + synthesis
     print(f"  Total report: {len(raw_report)} chars across {len(sections)} sections")
+    emit(state, "architect", f"{len(raw_report.split())} words across {len(sections)} sections")
 
     with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
         f.write(raw_report)
 
     return {"raw_report": raw_report}
 
-def factcheck_node(state: AgentState):
-    print("\n[FACTCHECK] Verifying citations...")
+STRIP_UNVERIFIED = os.getenv("STRIP_UNVERIFIED", "1") != "0"
+# Never gut a section: if more than this share of its factual sentences fail
+# verification, the crawl is too thin to judge and the text is kept as-is.
+MAX_STRIP_RATIO = float(os.getenv("MAX_STRIP_RATIO", "0.4"))
+# How far apart two figures from the same sentence may sit in a source and still
+# be read as describing the same fact.
+CLAIM_WINDOW = int(os.getenv("CLAIM_WINDOW", "400"))
+
+def _numbers_in(text: str) -> List[str]:
+    """Numeric tokens that a source must corroborate (years, %, magnitudes)."""
     import re
-    valid_ids = set(state["source_index"].keys())
-    raw = state.get("raw_report", "")
-    cited = set(int(x) for x in re.findall(r'\[(\d+)\]', raw))
-    valid_cited = cited & valid_ids
-    invalid_cited = cited - valid_ids
-    print(f"  {len(valid_cited)} valid citations, {len(invalid_cited)} unverified")
-    return {}
-
-def critic_node(state: AgentState):
-    iteration = state.get("iteration", 1)
-    print(f"\n[CRITIC] Quality audit - iteration {iteration}...")
-    raw = state.get("raw_report", "")[:3000]
-
-    for attempt in range(len(_groq_keys) * 2 + 1):
+    raw_numbers = re.findall(r'\d[\d,\.]*', text)
+    out = []
+    for n in raw_numbers:
+        clean = n.replace(",", "").rstrip(".")
+        if not clean:
+            continue
         try:
-            structured_llm = llm.with_structured_output(QualityVerdict)
-            verdict = structured_llm.invoke([
-                SystemMessage(content=CRITIC_PROMPT),
-                HumanMessage(content=f"TOPIC: {state['topic']}\n\nREPORT EXCERPT:\n{raw}")
-            ])
-            break
-        except Exception as e:
-            if _is_rate_limit_error(e):
-                _rotate_key()
-                print(f"  [KEY ROTATION] Switched to key {_key_index + 1}")
-                time.sleep(5)
-            else:
-                raise
-    else:
-        # All keys exhausted — return a default approved verdict to avoid blocking export
-        print("  [CRITIC] All keys rate limited, auto-approving to proceed to export...")
-        verdict = QualityVerdict(score=8, gaps=[], follow_up_queries=[], verdict="APPROVED")
+            value = float(clean)
+        except ValueError:
+            # Version strings ("2.3.2") and the like are not quantities.
+            continue
+        # Single digits and trivial values match almost any text; ignore them.
+        # A decimal is never trivial though — "$1.05 billion" is exactly the
+        # kind of figure worth checking, and the old floor of 2 threw it away.
+        if len(clean) > 1 and (value >= 2 or "." in clean):
+            out.append(clean)
+    return out
 
-    print(f"  Score: {verdict.score}/10 | {verdict.verdict}")
-    if verdict.gaps:
-        print(f"  Gaps: {', '.join(verdict.gaps[:2])}")
-    return {"quality": verdict, "iteration": iteration + 1}
+def _number_variants(number: str) -> List[str]:
+    """The ways a source is likely to have written the same quantity."""
+    variants = [number]
+    if number.isdigit() and len(number) > 3:  # 13000 written as 13,000
+        variants.append(f"{int(number):,}")
+    return variants
+
+def _corroborated(number: str, haystack: str) -> bool:
+    """True if the number appears in the source text in any usual formatting."""
+    return any(v in haystack for v in _number_variants(number))
+
+def _positions(number: str, haystack: str) -> List[int]:
+    """Every offset in the source where this quantity is written."""
+    found = []
+    for variant in _number_variants(number):
+        start = haystack.find(variant)
+        while start != -1:
+            found.append(start)
+            start = haystack.find(variant, start + 1)
+    return found
+
+def _co_occurs(numbers: List[str], haystack: str, window: int = CLAIM_WINDOW) -> bool:
+    """True if one passage of the source carries all of a sentence's figures.
+
+    Checking each number separately is what let a real Q3 figure get attached to
+    the wrong year: both strings existed on the page, thousands of characters
+    apart, so the sentence passed. A claim is one fact, so the figures that make
+    it up have to sit near each other in the text that is supposed to support it.
+    """
+    unique = list(dict.fromkeys(numbers))
+    hits = {n: _positions(n, haystack) for n in unique}
+    if any(not p for p in hits.values()):
+        return False
+    if len(unique) == 1:
+        return True
+    anchor = min(unique, key=lambda n: len(hits[n]))
+    return any(
+        all(any(abs(p - a) <= window for p in hits[n]) for n in unique if n != anchor)
+        for a in hits[anchor]
+    )
+
+def verify_claims(raw_report: str, source_texts: Dict[int, str], source_index: Dict[int, str]):
+    """Strip sentences whose figures no source actually supports.
+
+    The old check only asked whether a cited [N] existed in the index, so an
+    invented date wearing a real citation passed. This checks the numbers
+    themselves against the crawled text of the sources cited in that sentence,
+    falling back to the whole corpus when the sentence cites nothing.
+    """
+    import re
+    corpus = " ".join(source_texts.values())
+    valid_ids = set(source_index.keys())
+
+    kept_lines, unverified, checked, bad_ids = [], [], 0, set()
+    out_of_context = 0
+    for line in raw_report.split("\n"):
+        if line.startswith("##") or line.startswith("|") or not line.strip():
+            kept_lines.append(line)
+            continue
+
+        sentences = re.split(r'(?<=[.!?])\s+', line)
+        kept_sentences, dropped = [], []
+        for sentence in sentences:
+            cited = {int(x) for x in re.findall(r'\[(\d+)\]', sentence)}
+            bad_ids |= (cited - valid_ids)
+            numbers = _numbers_in(re.sub(r'\[\d+\]', '', sentence))
+            if not numbers:
+                kept_sentences.append(sentence)
+                continue
+
+            checked += 1
+            cited_text = " ".join(source_texts.get(sid, "") for sid in cited & valid_ids)
+            # A sentence is judged against what it cites. The corpus is only a
+            # fallback when the cited pages could not be read at all, otherwise
+            # a claim could borrow support from a source it never pointed at.
+            haystack = cited_text.strip() or corpus
+            if _co_occurs(numbers, haystack):
+                kept_sentences.append(sentence)
+            else:
+                if all(_corroborated(n, haystack) for n in numbers):
+                    out_of_context += 1
+                dropped.append(sentence)
+
+        if dropped and STRIP_UNVERIFIED and len(dropped) <= max(1, int(len(sentences) * MAX_STRIP_RATIO)):
+            unverified.extend(dropped)
+            kept_lines.append(" ".join(kept_sentences))
+        else:
+            unverified.extend(dropped)
+            kept_lines.append(line)
+
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines))
+    grounding = 1.0 if not checked else round((checked - len(unverified)) / checked, 2)
+    return cleaned, {
+        "checked": checked,
+        "unverified": unverified,
+        "grounding": grounding,
+        "out_of_context": out_of_context,
+        "invalid_source_ids": sorted(bad_ids),
+    }
+
+def factcheck_node(state: AgentState):
+    print("\n[FACTCHECK] Verifying citations against source text...")
+    source_texts = {int(k): v for k, v in (state.get("source_texts") or {}).items()}
+    source_index = {int(k): v for k, v in state["source_index"].items()}
+    cleaned, stats = verify_claims(state.get("raw_report", ""), source_texts, source_index)
+
+    print(f"  {stats['checked']} factual sentences checked | grounding {stats['grounding']:.0%}"
+          f" | {len(stats['unverified'])} unsupported"
+          f" ({stats['out_of_context']} figures real but not stated together)")
+    if stats["invalid_source_ids"]:
+        print(f"  Citations to non-existent sources: {stats['invalid_source_ids']}")
+    for sentence in stats["unverified"][:3]:
+        print(f"  [UNSUPPORTED] {sentence[:120]}")
+
+    emit(state, "factcheck",
+         f"{stats['checked']} factual claims checked, {stats['grounding']:.0%} grounded",
+         stats["checked"] - len(stats["unverified"]), stats["checked"])
+    return {"raw_report": cleaned, "grounding": stats["grounding"]}
+
+MAX_WEAK_SECTIONS = int(os.getenv("MAX_WEAK_SECTIONS", "3"))
+
+SECTION_RE = re.compile(r'##\s+SECTION:\s*(.+?)\n(.*?)(?=\n##\s|\Z)', re.DOTALL)
+
+
+@dataclass
+class SectionMetrics:
+    """Countable quality signals for one section, measured against the sources."""
+    title: str
+    words: int
+    figures: int
+    uncited: int
+    unsupported: int
+    repeated: int
+
+    @property
+    def density(self) -> float:
+        """Sourced figures per 100 words — how much of the prose carries content."""
+        return 100.0 * self.figures / self.words if self.words else 0.0
+
+    @property
+    def support_rate(self) -> float:
+        return 1.0 - self.unsupported / self.figures if self.figures else 0.0
+
+    @property
+    def cite_rate(self) -> float:
+        return 1.0 - self.uncited / self.figures if self.figures else 0.0
+
+    @property
+    def repeat_rate(self) -> float:
+        return self.repeated / self.figures if self.figures else 0.0
+
+    def failings(self) -> List[str]:
+        """Thresholds a section must clear to count as publishable on its own."""
+        bad = []
+        if self.figures and self.cite_rate < 0.85:
+            bad.append(f"{self.uncited}/{self.figures} figures uncited")
+        if self.figures and self.support_rate < 0.8:
+            bad.append(f"{self.unsupported}/{self.figures} figures no source carries")
+        if self.words >= 150 and self.density < 1.0:
+            bad.append(f"only {self.density:.1f} figures per 100 words")
+        if self.repeat_rate > 0.3:
+            bad.append(f"{self.repeated}/{self.figures} figures already used elsewhere")
+        return bad
+
+
+def measure_sections(
+    raw_report: str,
+    source_texts: Dict[int, str],
+    source_index: Dict[int, str],
+) -> List[SectionMetrics]:
+    """Measure each section against the crawled sources instead of eyeballing it.
+
+    The critic used to score prose it had no way to verify, so its number was a
+    guess. Everything countable — citation coverage, corroboration, fact density,
+    facts recycled from an earlier section — is settled here, deterministically.
+    """
+    corpus = " ".join(source_texts.values())
+    valid_ids = set(source_index.keys())
+    seen: set = set()
+    out: List[SectionMetrics] = []
+
+    for title, body in SECTION_RE.findall(raw_report):
+        figures = uncited = unsupported = repeated = 0
+        # Only figures a *previous* section already used count as repetition;
+        # restating one within the same argument is normal writing.
+        local: set = set()
+
+        for sentence in re.split(r'(?<=[.!?])\s+', body):
+            cited = {int(x) for x in re.findall(r'\[(\d+)\]', sentence)} & valid_ids
+            numbers = _numbers_in(re.sub(r'\[\d+\]', '', sentence))
+            if not numbers:
+                continue
+
+            figures += len(numbers)
+            if not cited:
+                uncited += len(numbers)
+
+            haystack = " ".join(source_texts.get(sid, "") for sid in cited) or corpus
+            # Same standard the fact-check applies: the figures of one claim
+            # must appear together, so a sentence built from two unrelated
+            # passages counts against the section.
+            in_context = _co_occurs(numbers, haystack)
+            for n in numbers:
+                if not in_context or not _corroborated(n, haystack):
+                    unsupported += 1
+                if n in seen:
+                    repeated += 1
+                local.add(n)
+
+        seen |= local
+        out.append(SectionMetrics(
+            title=title.strip(),
+            words=len(body.split()),
+            figures=figures,
+            uncited=uncited,
+            unsupported=unsupported,
+            repeated=repeated,
+        ))
+
+    return out
+
+
+def rubric_score(metrics: List[SectionMetrics]) -> Tuple[int, List[str]]:
+    """Turn the measurements into a 1-10 score with the reasons for every point lost.
+
+    An unanchored "be harsh" instruction made the model park on 3-4 whatever the
+    report looked like, so the number carried no information. These deductions are
+    reproducible: the same report always scores the same, and the caller can print
+    exactly which threshold cost it a point.
+    """
+    figures = sum(m.figures for m in metrics)
+    words = sum(m.words for m in metrics)
+    if not figures or not words:
+        return 1, ["report contains no sourced figures"]
+
+    cite_rate = 1.0 - sum(m.uncited for m in metrics) / figures
+    support_rate = 1.0 - sum(m.unsupported for m in metrics) / figures
+    repeat_rate = sum(m.repeated for m in metrics) / figures
+    density = 100.0 * figures / words
+
+    score, reasons = 10, []
+
+    for floor, penalty in ((0.70, 3), (0.85, 2), (0.95, 1)):
+        if cite_rate < floor:
+            score -= penalty
+            reasons.append(f"-{penalty} citation coverage {cite_rate:.0%}")
+            break
+
+    for floor, penalty in ((0.60, 3), (0.75, 2), (0.90, 1)):
+        if support_rate < floor:
+            score -= penalty
+            reasons.append(f"-{penalty} only {support_rate:.0%} of figures corroborated")
+            break
+
+    for floor, penalty in ((0.5, 3), (1.0, 2), (1.5, 1)):
+        if density < floor:
+            score -= penalty
+            reasons.append(f"-{penalty} {density:.1f} figures per 100 words")
+            break
+
+    for ceiling, penalty in ((0.35, 3), (0.20, 2), (0.10, 1)):
+        if repeat_rate > ceiling:
+            score -= penalty
+            reasons.append(f"-{penalty} {repeat_rate:.0%} of figures repeat an earlier section")
+            break
+
+    return max(1, score), reasons
+
+
+def audit_node(state: AgentState):
+    """Measure the report, then ask the model only what measurement cannot answer.
+
+    Scoring and weak-section triage share one LLM call — they used to be two round
+    trips over the same text — and the score itself is no longer part of that call.
+    """
+    iteration = state.get("iteration", 1)
+    print(f"\n[AUDIT] Scoring report and triaging weak sections - iteration {iteration}...")
+    raw = state.get("raw_report", "")
+    source_texts = {int(k): v for k, v in (state.get("source_texts") or {}).items()}
+    source_index = {int(k): v for k, v in (state.get("source_index") or {}).items()}
+
+    metrics = measure_sections(raw, source_texts, source_index)
+    score, reasons = rubric_score(metrics)
+
+    measured = "\n".join(
+        f"- \"{m.title}\": {m.words} words, {m.figures} figures, "
+        f"{m.cite_rate:.0%} cited, {m.support_rate:.0%} corroborated, "
+        f"{m.density:.1f} figures/100 words"
+        + (f" | FAILS: {'; '.join(m.failings())}" if m.failings() else "")
+        for m in metrics
+    )
+    bodies = "\n\n".join(
+        f"SECTION: {title.strip()}\n{body.strip()[:1200]}"
+        for title, body in SECTION_RE.findall(raw)
+    ) or raw[:3000]
+
+    emit(state, "audit", f"Reviewing {len(metrics)} sections for weak arguments")
+    audit = _structured_invoke(ReportAudit, [
+        SystemMessage(content=CRITIC_PROMPT),
+        HumanMessage(content=(
+            f"TOPIC: {state['topic']}\n\n"
+            f"MEASURED (already verified against the sources):\n{measured}\n\n"
+            f"REPORT SECTIONS:\n{bodies}"
+        ))
+    ])
+    if audit is None:
+        print("  [AUDIT] All keys rate limited, using measured score only...")
+        audit = ReportAudit(score=score, gaps=[], follow_up_queries=[], verdict="APPROVED")
+
+    flagged = {w.section.strip(): w for w in audit.weak_sections}
+    for m in metrics:
+        if m.failings() and m.title not in flagged:
+            flagged[m.title] = SectionChallenge(
+                section=m.title,
+                problem="No specifics",
+                challenge=f"This section measures badly ({'; '.join(m.failings())}). "
+                          "Replace vague passages with figures the evidence carries.",
+            )
+    weak = list(flagged.values())[:MAX_WEAK_SECTIONS]
+
+    audit = audit.model_copy(update={
+        "score": score,
+        "verdict": "NEEDS_MORE_RESEARCH" if score < 6 and audit.follow_up_queries else "APPROVED",
+        "weak_sections": weak,
+    })
+
+    print(f"  Score: {audit.score}/10 | {audit.verdict}"
+          + (f" ({', '.join(reasons)})" if reasons else " (no deductions)"))
+    if audit.gaps:
+        print(f"  Gaps: {', '.join(audit.gaps[:2])}")
+    for w in weak:
+        print(f"  Weak: {w.section[:60]} — {w.problem}")
+    if not weak:
+        print("  No section failed review; skipping rewrite.")
+
+    emit(state, "audit",
+         f"Scored {audit.score}/10, {len(weak)} section(s) flagged for rewrite")
+    return {
+        "quality": audit,
+        "weak_sections": weak,
+        "iteration": iteration + 1,
+    }
 
 def refine_node(state: AgentState):
     verdict = state["quality"]
@@ -613,12 +1331,27 @@ def refine_node(state: AgentState):
         )
     }
 
+# A refine pass re-runs the crawler and the whole architect (~7 more LLM calls),
+# so it is only worth it when the report is genuinely thin — not merely when a
+# harsh critic asks for more.
+REFINE_GROUNDING_FLOOR = float(os.getenv("REFINE_GROUNDING_FLOOR", "0.75"))
+MAX_REFINE_ITERATIONS = int(os.getenv("MAX_REFINE_ITERATIONS", "2"))
+
 def should_refine(state: AgentState) -> str:
     verdict = state.get("quality")
     iteration = state.get("iteration", 1)
-    if verdict and verdict.verdict == "NEEDS_MORE_RESEARCH" and iteration <= 4:
-        return "refine"
-    return "export"
+    grounding = state.get("grounding", 0.0)
+
+    if not verdict or verdict.verdict != "NEEDS_MORE_RESEARCH":
+        return "export"
+    if iteration > MAX_REFINE_ITERATIONS:
+        return "export"
+    if grounding >= REFINE_GROUNDING_FLOOR:
+        print(f"  [REFINE SKIPPED] Grounding {grounding:.0%} is already solid; exporting.")
+        return "export"
+    if not verdict.follow_up_queries:
+        return "export"
+    return "refine"
 
 # ── PDF HELPERS ────────────────────────────────────────────────────────────────
 def sanitize(text: str) -> str:
@@ -629,6 +1362,16 @@ def sanitize(text: str) -> str:
     }
     for k, v in replacements.items():
         text = text.replace(k, v)
+    # Models emit narrow/no-break spaces and non-breaking hyphens. latin-1 drops
+    # them silently, which glues words together ("$3.447billion", "Form10K"), so
+    # map every space-like and dash-like codepoint onto its ASCII equivalent.
+    import unicodedata
+    text = "".join(
+        " " if unicodedata.category(c) == "Zs"
+        else "-" if unicodedata.category(c) == "Pd"
+        else c
+        for c in text
+    )
     return text.encode("latin-1", errors="ignore").decode("latin-1")
 
 def draw_line(pdf, w, r=180, g=180, b=180):
@@ -813,113 +1556,36 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
     pdf.set_fill_color(20, 20, 20)
     pdf.rect(0, 287, 210, 10, "F")
 
-    filename = f"REPORT_{title[:35].replace(' ', '_').upper()}.pdf"
-    filename = "".join(c for c in filename if c not in r'\/:*?"<>|')
+    # Titles come from the model, so they carry curly quotes and dashes. Those
+    # cannot go in a Content-Disposition header, so fold to plain ASCII here.
+    stem = sanitize(title[:35]).replace(" ", "_").upper()
+    stem = re.sub(r"[^A-Z0-9_-]", "", stem).strip("_") or "REPORT"
+    filename = f"REPORT_{stem}.pdf"
     pdf.output(filename)
     print(f"\n[EXPORTED] {filename} | {len(section_blocks)} sections | {len(source_index)} sources")
     return filename
 
-CHALLENGER_PROMPT = """You are a sharp editorial critic reviewing a research report before publication.
-Your job: find the 2 weakest sections and return specific, actionable challenges.
+def _rewrite_one(topic, sec_title, challenge_text, existing_body,
+                 source_index, source_titles, source_texts):
+    """Rewrite a single section against its own evidence. Runs in a worker thread."""
+    sids = select_sources(sec_title, topic, source_texts, source_titles, source_index)
+    evidence = build_evidence_block(sids, source_index, source_titles, source_texts)
 
-For each weak section, identify ONE of these problems:
-- "Safe explanation" — describes what happened but never says why it was wrong or what better alternative existed
-- "Repetition" — repeats a point already made in another section
-- "Missing contrarian" — accepts the obvious narrative without challenging it
-- "No specifics" — makes claims without hard numbers, dates, or named decisions
+    rewritten = llm_invoke_with_rotation([
+        SystemMessage(content=(
+            "You are rewriting one section of a research report to fix a specific weakness. "
+            "Keep every fact that the evidence supports and drop the ones it does not. "
+            "The rewrite must be at least as long as the existing content: fix it by adding "
+            "mechanism, causes and consequences from the evidence, not by cutting material. "
+            "Deleting a supported fact to shorten the section is a failure. "
+            "Add no figure, date, or name that is absent from the evidence below. "
+            f"Never use these filler phrases: {', '.join(SLOP_PHRASES)}. "
+            "No closing summary. Cite sources inline as [N]. No bullet points. Flowing prose only."
+        )),
+        HumanMessage(content=f"""TOPIC: {topic}
 
-Be surgical. Return exactly 2 challenges, each targeting a specific section by its title.
-Format strictly as:
-SECTION: [exact section title]
-PROBLEM: [one of the 4 problem types above]
-CHALLENGE: [one sharp question or missing angle the rewrite must address]
----
-SECTION: [exact section title]
-PROBLEM: [one of the 4 problem types above]
-CHALLENGE: [one sharp question or missing angle the rewrite must address]"""
-
-def section_challenger_node(state: AgentState):
-    print("\n[CHALLENGER] Identifying weak sections...")
-    raw = state.get("raw_report", "")
-
-    # Extract just section titles + first 300 chars of each for efficiency
-    import re
-    sections = re.findall(r'##\s+SECTION:\s*(.+?)\n(.{0,300})', raw, re.DOTALL)
-    if not sections:
-        print("  No sections found, skipping challenge.")
-        return {"challenge_notes": ""}
-
-    preview = "\n\n".join(
-        f"SECTION: {title.strip()}\n{body.strip()[:300]}"
-        for title, body in sections
-    )
-
-    response = llm_invoke_with_rotation([
-        SystemMessage(content=CHALLENGER_PROMPT),
-        HumanMessage(content=f"TOPIC: {state['topic']}\n\nREPORT SECTIONS PREVIEW:\n{preview}")
-    ])
-
-    notes = response.content.strip()
-    print(f"  Challenges identified:\n{notes[:300]}...")
-    return {"challenge_notes": notes}
-
-
-def targeted_rewrite_node(state: AgentState):
-    print("\n[REWRITER] Fixing challenged sections...")
-    notes = state.get("challenge_notes", "")
-    if not notes:
-        print("  No challenges to address, skipping.")
-        return {}
-
-    import re
-    raw = state.get("raw_report", "")
-
-    # Parse challenged section titles from notes
-    challenged = re.findall(r'SECTION:\s*(.+)', notes)
-    if not challenged:
-        return {}
-
-    top_index = dict(sorted(state["source_index"].items())[:30])
-    top_titles = {k: state["source_titles"].get(k, "") for k in top_index}
-    index_str = "\n".join(
-        f"[{sid}] {url} - \"{top_titles.get(sid, '')}\""
-        for sid, url in top_index.items()
-    )
-
-    updated_report = raw
-    for sec_title in challenged[:2]:  # max 2 rewrites
-        sec_title = sec_title.strip()
-        # Find the challenge note for this section
-        challenge_match = re.search(
-            rf'SECTION:\s*{re.escape(sec_title)}.*?CHALLENGE:\s*(.+?)(?=---|$)',
-            notes, re.DOTALL
-        )
-        challenge_text = challenge_match.group(1).strip() if challenge_match else "Add critical analysis and contrarian perspective."
-
-        print(f"  Rewriting: {sec_title[:60]}...")
-        print(f"  Challenge: {challenge_text[:100]}")
-
-        # Find existing section content
-        sec_match = re.search(
-            rf'(##\s+SECTION:\s*{re.escape(sec_title)}\n)(.*?)(?=\n##\s+SECTION:|\n##\s+SYNTHESIS|\Z)',
-            updated_report, re.DOTALL
-        )
-        if not sec_match:
-            print(f"  Section not found in report, skipping.")
-            continue
-
-        existing_body = sec_match.group(2).strip()[:1500]
-
-        rewritten = llm_invoke_with_rotation([
-            SystemMessage(content=(
-                "You are rewriting one section of a research report to fix a specific weakness. "
-                "Keep all correct facts. Improve the analysis. Minimum 400 words. "
-                "Cite sources inline as [N]. No bullet points. Flowing prose only."
-            )),
-            HumanMessage(content=f"""TOPIC: {state['topic']}
-
-SOURCE INDEX:
-{index_str}
+EVIDENCE (the only material you may draw facts from):
+{evidence}
 
 SECTION TO REWRITE: {sec_title}
 
@@ -930,15 +1596,78 @@ SPECIFIC CHALLENGE TO ADDRESS:
 {challenge_text}
 
 Rewrite this section now, directly addressing the challenge:""")
-        ]).content
+    ]).content
+    rewritten = strip_slop(rewritten)
+    # Rewrites were coming back as summaries of the original. A shorter section
+    # is only accepted when it was stripping unsupported material, which the
+    # evidence-grounded rewrite has no reason to do at this scale.
+    if len(rewritten.split()) < 0.9 * len(existing_body.split()):
+        print(f"  Rewrite shrank {sec_title[:50]}, keeping the original")
+        return existing_body
+    return rewritten
 
-        # Replace old section body with rewritten version
-        updated_report = updated_report[:sec_match.start(2)] + "\n" + rewritten + "\n" + updated_report[sec_match.end(2):]
-        time.sleep(3)
 
-    print(f"  Rewrite complete. {len(challenged[:2])} section(s) improved.")
+def targeted_rewrite_node(state: AgentState):
+    print("\n[REWRITER] Fixing challenged sections...")
+    weak = state.get("weak_sections") or []
+    if not weak:
+        print("  No weak sections flagged, skipping.")
+        return {}
 
-    # Save updated report to debug file
+    import re
+    raw = state.get("raw_report", "")
+    source_index = {int(k): v for k, v in state["source_index"].items()}
+    source_titles = {int(k): v for k, v in (state.get("source_titles") or {}).items()}
+    source_texts = {int(k): v for k, v in (state.get("source_texts") or {}).items()}
+
+    # Locate each flagged section first, so the rewrites themselves can run
+    # concurrently instead of editing the report one after another.
+    jobs = []
+    for challenge in weak[:MAX_WEAK_SECTIONS]:
+        sec_title = challenge.section.strip()
+        sec_match = re.search(
+            rf'(##\s+SECTION:\s*{re.escape(sec_title)}\n)(.*?)(?=\n##\s+SECTION:|\n##\s+SYNTHESIS|\Z)',
+            raw, re.DOTALL
+        )
+        if not sec_match:
+            print(f"  Section not found in report, skipping: {sec_title[:60]}")
+            continue
+        print(f"  Rewriting: {sec_title[:60]} ({challenge.problem})")
+        jobs.append((sec_match, sec_title, challenge.challenge, sec_match.group(2).strip()))
+
+    if not jobs:
+        return {}
+
+    emit(state, "targeted_rewrite", "Rewriting flagged sections", 0, len(jobs))
+    rewrites = [""] * len(jobs)
+    completed = 0
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        futures = {
+            pool.submit(
+                _rewrite_one, state["topic"], job[1], job[2], job[3],
+                source_index, source_titles, source_texts,
+            ): i
+            for i, job in enumerate(jobs)
+        }
+        for fut in as_completed(futures):
+            i = futures[fut]
+            rewrites[i] = fut.result()
+            completed += 1
+            emit(state, "targeted_rewrite", f"Rewrote: {jobs[i][1]}", completed, len(jobs))
+
+    # Splice back-to-front so earlier match offsets stay valid.
+    updated_report = raw
+    for (sec_match, _, _, _), rewritten in sorted(
+        zip(jobs, rewrites), key=lambda pair: pair[0][0].start(2), reverse=True
+    ):
+        updated_report = (
+            updated_report[:sec_match.start(2)] + "\n" + rewritten + "\n"
+            + updated_report[sec_match.end(2):]
+        )
+
+    changed = sum(1 for job, new in zip(jobs, rewrites) if new != job[3])
+    print(f"  Rewrite complete. {changed}/{len(jobs)} section(s) changed.")
+
     with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
         f.write(updated_report)
 
@@ -951,21 +1680,19 @@ builder.add_node("strategist",          strategist_node)
 builder.add_node("commander_review",    hitl_node)
 builder.add_node("crawler",             crawler_node)
 builder.add_node("architect",           architect_node)
-builder.add_node("section_challenger",  section_challenger_node)
+builder.add_node("audit",               audit_node)
 builder.add_node("targeted_rewrite",    targeted_rewrite_node)
 builder.add_node("factcheck",           factcheck_node)
-builder.add_node("critic",              critic_node)
 builder.add_node("refine",              refine_node)
 
 builder.set_entry_point("strategist")
 builder.add_edge("strategist",         "commander_review")
 builder.add_edge("commander_review",   "crawler")
 builder.add_edge("crawler",            "architect")
-builder.add_edge("architect",          "section_challenger")
-builder.add_edge("section_challenger", "targeted_rewrite")
+builder.add_edge("architect",          "audit")
+builder.add_edge("audit",              "targeted_rewrite")
 builder.add_edge("targeted_rewrite",   "factcheck")
-builder.add_edge("factcheck",          "critic")
-builder.add_conditional_edges("critic", should_refine, {"refine": "refine", "export": END})
+builder.add_conditional_edges("factcheck", should_refine, {"refine": "refine", "export": END})
 builder.add_edge("refine",             "crawler")
 
 app = builder.compile(checkpointer=memory, interrupt_before=["commander_review"])
