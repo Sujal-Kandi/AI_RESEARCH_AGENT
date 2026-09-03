@@ -13,7 +13,6 @@ slowapi
 langchain
 langchain-community
 langchain-groq
-langchain-together
 langchain-tavily
 langchain-openai
 langchain-core

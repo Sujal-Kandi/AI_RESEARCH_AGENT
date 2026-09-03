@@ -386,6 +386,10 @@ def _run_pipeline(session_id: str, username: str):
 
         pdf_filename = Path(pdf_path).name
 
+        # print token summary to Render logs
+        from agent import print_token_summary
+        print_token_summary()
+
         # save to PostgreSQL history
         _save_report_to_db(username, state["topic"], pdf_bytes, pdf_filename)
 

@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import sqlite3
 import requests
@@ -16,7 +16,6 @@ from fpdf.enums import XPos, YPos
 
 
 from langchain_groq import ChatGroq
-from langchain_together import ChatTogether
 from langchain_tavily import TavilySearch
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
@@ -38,7 +37,7 @@ if os.path.exists(_secret_path):
                 if not os.environ.get(_k.strip()):
                     os.environ[_k.strip()] = _v.strip()
 
-# ── TOOLS ─────────────────────────────────────────────────────────────────────
+# â”€â”€ TOOLS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def get_web_search(include_domains: Optional[List[str]] = None):
     return TavilySearch(
         max_results=6,
@@ -52,17 +51,15 @@ def make_llm(key: str):
 
 
 
-# ── CUSTOM EXCEPTIONS ─────────────────────────────────────────────────────────
+# â”€â”€ CUSTOM EXCEPTIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 class RateLimitExhausted(Exception):
     """Raised when all LLM API keys are rate limited and no fallback is available."""
     pass
 
-# ── LLM with key rotation ─────────────────────────────────────────────────────
+# â”€â”€ LLM with key rotation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _groq_keys = []
 _key_index = 0
-_using_fallback = False
 # Key index -> monotonic timestamp when that key is expected to be usable again.
-# A rate-limited key is remembered as cooling rather than permanently burned, so
 # a long run can come back to it once its per-minute window resets.
 _key_cooldowns: Dict[int, float] = {}
 llm = None
@@ -91,22 +88,16 @@ def _init_llm():
                 os.getenv("GROQ_API_KEY_3", ""),
                 os.getenv("GROQ_API_KEY_4", ""),
                 os.getenv("GROQ_API_KEY_5", ""),
+                os.getenv("GROQ_API_KEY_6", ""),
+                os.getenv("GROQ_API_KEY_7", ""),
+                os.getenv("GROQ_API_KEY_8", ""),
+                os.getenv("GROQ_API_KEY_9", ""),
             ] if k and k.strip()]
             print(f"  [INIT] Loaded {len(_groq_keys)} Groq keys")
         if llm is None and _groq_keys:
             llm = make_llm(_groq_keys[0])
             print(f"  [INIT] LLM initialized with key index 0")
 
-def make_together_llm():
-    together_key = os.getenv("TOGETHER_API_KEY")
-    if not together_key:
-        raise RuntimeError("No TOGETHER_API_KEY found in .env")
-    print("  [FALLBACK] Switching to Together.ai (Llama-3.3-70B-Instruct)")
-    return ChatTogether(
-        model="meta-llama/Llama-3.3-70B-Instruct",
-        together_api_key=together_key,
-        temperature=0.2,
-    )
 
 def _is_rate_limit_error(e: Exception) -> bool:
     """Detect rate limit errors across different exception types."""
@@ -134,11 +125,11 @@ def _retry_after_seconds(error: Exception) -> float:
     seconds = value / 1000 if unit == "ms" else value * 60 if unit == "m" else value
     return min(max(seconds, 1.0), 600.0)
 
-def _structured_invoke(schema, messages):
+def _structured_invoke(schema, messages, stage="structured"):
     """Structured-output call that shares the rotation/backoff path. None if exhausted."""
     _init_llm()
     try:
-        return llm_invoke_with_rotation(messages, structured_output=schema)
+        return llm_invoke_with_rotation(messages, structured_output=schema, stage=stage)
     except RateLimitExhausted:
         return None
 
@@ -154,12 +145,11 @@ def _advance_key(failed_generation: int, error: Exception = None):
     None when nothing is left to try. The sleep happens in the caller so this
     never holds the lock while waiting.
     """
-    global llm, _key_index, _using_fallback, _llm_generation
+    global llm, _key_index, _llm_generation
     with _llm_lock:
         if _llm_generation != failed_generation:
             # Another thread already rotated; just retry with the new client.
             return 0.0
-        if _using_fallback:
             return None
 
         now = time.monotonic()
@@ -174,7 +164,7 @@ def _advance_key(failed_generation: int, error: Exception = None):
             return 1.0
 
         # Every key is cooling. Waiting for the soonest one is almost always
-        # faster than failing the whole run — a Groq TPM window is ~60s.
+        # faster than failing the whole run - a Groq TPM window is ~60s.
         soonest = min(range(len(_groq_keys)), key=lambda i: _key_cooldowns.get(i, 0.0))
         wait = max(0.0, _key_cooldowns.get(soonest, 0.0) - now)
         if wait <= MAX_RATE_LIMIT_WAIT:
@@ -185,35 +175,92 @@ def _advance_key(failed_generation: int, error: Exception = None):
                   f"waiting {wait:.0f}s for key {soonest + 1}")
             return wait
 
-        print("  [RATE LIMIT] All Groq keys exhausted, switching to Together.ai...")
-        try:
-            llm = make_together_llm()
-        except RuntimeError:
-            return None  # No Together.ai key configured at all
-        except Exception as fallback_e:
-            if "401" in str(fallback_e) or "invalid" in str(fallback_e).lower():
-                print("  [TOGETHER AUTH FAILED] Invalid API key — check TOGETHER_API_KEY in .env")
-            raise fallback_e
-        _using_fallback = True
-        _key_cooldowns.clear()
-        _llm_generation += 1
-        return 2.0
+        return None
 
-def llm_invoke_with_rotation(messages, structured_output=None):
-    """Invoke LLM, rotating Groq keys on rate limit, then falling back to Together.ai.
+_llm_call_count = 0
+_llm_token_log = []  # list of dicts per call: {call, stage, in, out, total_so_far}
+_llm_token_lock = threading.Lock()
 
-    Safe to call from multiple threads: only rotation touches shared state, and
-    the network call itself happens outside the lock so sections run in parallel.
-    """
-    _init_llm()  # ensure LLM is initialized
+
+def _count_tokens(text: str) -> int:
+    """Rough token estimate - 1 token per 4 chars. No tiktoken dependency needed."""
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def _messages_tokens(messages) -> int:
+    total = 0
+    for m in messages:
+        content = getattr(m, "content", "") or ""
+        if isinstance(content, list):
+            content = " ".join(str(c) for c in content)
+        total += _count_tokens(str(content))
+    return total
+
+
+def print_token_summary():
+    """Print full token usage summary. Call this after the pipeline finishes."""
+    with _llm_token_lock:
+        log = list(_llm_token_log)
+    if not log:
+        print("\n[TOKEN SUMMARY] No LLM calls recorded.")
+        return
+
+    total_in  = sum(e["in"]  for e in log)
+    total_out = sum(e["out"] for e in log)
+    total     = total_in + total_out
+
+    print("\n" + "=" * 62)
+    print(f"  TOKEN USAGE SUMMARY  ({len(log)} LLM calls)")
+    print("=" * 62)
+    print(f"  {'#':<4} {'Stage':<28} {'In':>7} {'Out':>7} {'Total':>8}")
+    print(f"  {'-'*4} {'-'*28} {'-'*7} {'-'*7} {'-'*8}")
+    for e in log:
+        print(f"  {e['call']:<4} {e['stage'][:28]:<28} {e['in']:>7,} {e['out']:>7,} {e['in']+e['out']:>8,}")
+    print(f"  {'-'*4} {'-'*28} {'-'*7} {'-'*7} {'-'*8}")
+    print(f"  {'TOTAL':<33} {total_in:>7,} {total_out:>7,} {total:>8,}")
+    print("=" * 62)
+
+
+def llm_invoke_with_rotation(messages, structured_output=None, stage="unknown"):
+    """Invoke LLM with key rotation, rate-limit backoff, and token tracking."""
+    global llm, _key_index, _llm_call_count
+
+    _init_llm()
+
+    with _llm_token_lock:
+        _llm_call_count += 1
+        call_num = _llm_call_count
+
+    in_tokens = _messages_tokens(messages)
+    provider = f"Groq key {_key_index + 1}"
+    print(f"  [LLM #{call_num}] {stage} | provider: {provider} | in: ~{in_tokens:,} tokens")
+
     waited = 0.0
 
     while True:
         client, generation = _current_client()
         try:
             if structured_output is not None:
-                return client.with_structured_output(structured_output).invoke(messages)
-            return client.invoke(messages)
+                response = client.with_structured_output(structured_output).invoke(messages)
+                out_tokens = _count_tokens(str(response))
+            else:
+                response = client.invoke(messages)
+                out_tokens = _count_tokens(getattr(response, "content", str(response)))
+
+            with _llm_token_lock:
+                total_so_far = sum(e["in"] + e["out"] for e in _llm_token_log) + in_tokens + out_tokens
+                _llm_token_log.append({
+                    "call":  call_num,
+                    "stage": stage,
+                    "in":    in_tokens,
+                    "out":   out_tokens,
+                })
+
+            print(f"  [LLM #{call_num}] done | out: ~{out_tokens:,} | running total: ~{total_so_far:,} tokens")
+            return response
+
         except Exception as e:
             if not _is_rate_limit_error(e):
                 print(f"  [LLM ERROR] {type(e).__name__}: {e}")
@@ -226,21 +273,22 @@ def llm_invoke_with_rotation(messages, structured_output=None):
             waited += wait
             time.sleep(wait)
 
+
+
+
 def _rotate_key():
     """Rotate to next available Groq API key."""
     global llm, _key_index, _llm_generation
     _init_llm()
     with _llm_lock:
-        if _using_fallback:
-            return
         _key_index = (_key_index + 1) % len(_groq_keys)
         llm = make_llm(_groq_keys[_key_index])
         _llm_generation += 1
-# ── PERSISTENCE ───────────────────────────────────────────────────────────────
+# â”€â”€ PERSISTENCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 conn = sqlite3.connect("research_memory.db", check_same_thread=False)
 memory = SqliteSaver(conn)
 
-# ── SCHEMAS ───────────────────────────────────────────────────────────────────
+# â”€â”€ SCHEMAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 class ResearchPlan(BaseModel):
     queries: List[str] = Field(description="10-15 high-precision search queries covering different angles.")
     reasoning: str = Field(description="Why these queries were chosen and what gaps they cover.")
@@ -322,7 +370,7 @@ class AgentState(Dict):
     iteration: int
     research_rounds: int
 
-# ── SYSTEM PROMPTS ─────────────────────────────────────────────────────────────
+# â”€â”€ SYSTEM PROMPTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 STRATEGIST_PROMPT = """You are an elite intelligence analyst. Build a comprehensive research plan.
 Generate 10-15 search queries covering:
 - Technical specifications and hard metrics
@@ -333,30 +381,30 @@ Generate 10-15 search queries covering:
 Every query must target a specific data point. No generic queries.
 
 At least three queries must go after the document the numbers originally came from,
-not an article describing it. Name the artefact in the query — annual report, 10-K or
+not an article describing it. Name the artefact in the query - annual report, 10-K or
 other regulator filing, court judgment, official statistics release, standards document,
 technical specification, arXiv paper, transcript. A retelling loses figures and gains
 errors; the filing has the table."""
 
 CRITIC_PROMPT = """You are a research quality auditor. Grounding, citation coverage,
 fact density and repetition have already been measured against the crawled sources and are
-given to you below — do not re-judge them, and do not guess at them from the prose.
+given to you below - do not re-judge them, and do not guess at them from the prose.
 
 Your job is the part measurement cannot do: read the sections and name the ones with a
 reasoning problem. Flag a section only when you can point to the sentence that fails.
-Flagging nothing is a valid and common answer — do not manufacture a fault to fill the list.
+Flagging nothing is a valid and common answer - do not manufacture a fault to fill the list.
 Classify each problem as one of:
-- "Safe explanation" — describes what happened but never says why, or what it cost
-- "Repetition" — retells an event another section already narrated
-- "Missing contrarian" — accepts the obvious narrative without challenging it
-- "No specifics" — claims without hard numbers, dates, or named decisions
+- "Safe explanation" - describes what happened but never says why, or what it cost
+- "Repetition" - retells an event another section already narrated
+- "Missing contrarian" - accepts the obvious narrative without challenging it
+- "No specifics" - claims without hard numbers, dates, or named decisions
 Each challenge must be one sharp question the rewrite has to answer.
 
 Separately, list gaps: data points the report needs that the sources plainly do not contain
 (a rewrite cannot invent them). Give a follow-up query for each. If the report answers its
 topic with the material it has, return no gaps."""
 
-# ── NODES ──────────────────────────────────────────────────────────────────────
+# â”€â”€ NODES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def strategist_node(state: AgentState):
     print("\n[STRATEGIST] Building search vectors...")
     memory_context = query_memory(state["topic"])
@@ -367,7 +415,7 @@ def strategist_node(state: AgentState):
     plan = _structured_invoke(ResearchPlan, [
         SystemMessage(content=STRATEGIST_PROMPT),
         HumanMessage(content=f"Build research plan for: {state['topic']}{memory_hint}")
-    ])
+    ], stage="strategist")
     if plan is None:
         raise RateLimitExhausted(
             "All API keys are currently rate limited. Please try again in 5 minutes."
@@ -461,12 +509,12 @@ def emit(state, stage: str, detail: str = "", done=None, total=None):
         pass
 
 def _search_one(query: str, include_domains: Optional[List[str]] = None):
-    """Run one search query. Never raises — a dead query must not kill the crawl."""
+    """Run one search query. Never raises - a dead query must not kill the crawl."""
     try:
         response = get_web_search(include_domains).invoke(query)
         return response.get("results", []) if isinstance(response, dict) else response
     except Exception as e:
-        print(f"  Query failed: {query[:50]} — {e}")
+        print(f"  Query failed: {query[:50]} - {e}")
         return []
 
 def interleave(results_per_query: List[list]) -> list:
@@ -545,7 +593,7 @@ def crawler_node(state: AgentState):
             from_this_query.append(entry)
         per_query_sources.append(from_this_query)
 
-    # Deep fetch the most authoritative sources first — official/primary domains
+    # Deep fetch the most authoritative sources first - official/primary domains
     # are where the hard numbers live, so they get the full-page fetch budget.
     # Within a tier, take one source per query in turn so the budget covers the
     # whole plan rather than the first query's results.
@@ -593,7 +641,7 @@ def crawler_node(state: AgentState):
          f"{len(source_index)} sources indexed, {deep_fetch_count} read in full "
          f"({primary_read} official)")
 
-    # ── GUARD: stop before any LLM calls if web returned nothing useful ───────
+    # â”€â”€ GUARD: stop before any LLM calls if web returned nothing useful â”€â”€â”€â”€â”€â”€â”€
     if len(source_index) < 3:
         raise ValueError(
             f"Not enough sources found for '{state['topic']}' ({len(source_index)} result(s)). "
@@ -630,7 +678,7 @@ SLOP_PHRASES = (
     "as we look to the future",
 )
 
-SECTION_WORKERS = int(os.getenv("SECTION_WORKERS", "4"))
+SECTION_WORKERS = int(os.getenv("SECTION_WORKERS", "8"))
 SECTION_MIN_WORDS = int(os.getenv("SECTION_MIN_WORDS", "600"))
 SECTION_MIN = int(os.getenv("SECTION_MIN", "3"))
 SECTION_MAX = int(os.getenv("SECTION_MAX", "9"))
@@ -652,8 +700,8 @@ def evidence_section_ceiling(source_texts: Dict[int, str]) -> int:
 def generate_section_topics(topic: str, raw_data: str, ceiling: int) -> List[str]:
     """Let the topic decide how many sections it needs, capped by the evidence.
 
-    Evidence volume alone is a bad proxy for scope — a one-line question and a
-    decades-long history return similar amounts of text — so the model picks
+    Evidence volume alone is a bad proxy for scope - a one-line question and a
+    decades-long history return similar amounts of text - so the model picks
     the count from the subject and the crawl only sets the upper bound.
     """
     if SECTION_COUNT_OVERRIDE:
@@ -670,7 +718,7 @@ First decide how many sections this subject actually needs, between {low} and {c
 
 Then propose that many section titles.
 Rules:
-- Each title must be specific and distinct — no overlap
+- Each title must be specific and distinct - no overlap
 - Each section must be broad enough to carry {SECTION_MIN_WORDS}+ words of dense analysis on its own
 - If you use 4 or more sections, one MUST be a timeline of key events and one MUST be a contrarian/critical analysis
 - If you use 5 or more sections, one MUST also be a comparison ("Comparative Analysis: [A] vs [B]")
@@ -678,7 +726,7 @@ Rules:
 Return ONLY a Python list of strings, nothing else. Example:
 ["Title One", "Title Two", "Title Three"]"""
     try:
-        response = llm_invoke_with_rotation([HumanMessage(content=prompt)]).content.strip()
+        response = llm_invoke_with_rotation([HumanMessage(content=prompt)], stage="section_topics").content.strip()
         import ast, re
         match = re.search(r'\[.*?\]', response, re.DOTALL)
         if match:
@@ -822,7 +870,7 @@ RAW DATA:
         "Attribute claims to the organisation that produced the data (e.g. RBI, NPCI), never to the blogger who repeated it. "
         f"Never use these filler phrases: {banned}. "
         "Do not end sections with a summary or conclusion paragraph. Do not restate a point you already made. "
-        "No bullet points. Length follows the evidence — stop when the evidence is used up rather than padding."
+        "No bullet points. Length follows the evidence - stop when the evidence is used up rather than padding."
     )
 
     # Step 1: Write title, key findings, executive summary
@@ -846,7 +894,7 @@ Write ONLY the following three parts, nothing else:
 
 ## EXECUTIVE_SUMMARY
 [200-250 words. Written for a senior decision-maker. Cover what was investigated, the 3 most critical findings with specific metrics, and the strategic implication. Every figure must come from the sources above and carry its [N].]""")
-    ]).content
+    ], stage="architect:header").content
     header = strip_slop(header)
 
     # Step 2: Write each section independently, in parallel
@@ -873,18 +921,18 @@ Write ONLY the following three parts, nothing else:
             SystemMessage(content=section_system),
             HumanMessage(content=f"""TOPIC: {topic}
 
-EVIDENCE FOR THIS SECTION — this is the only material you may draw facts from:
+EVIDENCE FOR THIS SECTION - this is the only material you may draw facts from:
 {evidence}
 
 Write ONLY this one section. Do not write any other sections.
 
 ## SECTION: {sec_title}
 
-OTHER SECTIONS IN THIS REPORT (written separately — do NOT cover their ground):
+OTHER SECTIONS IN THIS REPORT (written separately - do NOT cover their ground):
 {other_titles}
 
 An event that belongs to another section's subject is theirs to narrate. If you need it,
-refer to it in a single clause and move on — never re-tell it.
+refer to it in a single clause and move on - never re-tell it.
 
 How to write it:
 - Ground every claim in the EVIDENCE above and cite it inline as [N]. A sentence with a
@@ -895,20 +943,20 @@ How to write it:
 - Where the evidence supports a judgment, make it and say which fact drives it. Where it does
   not, describe the fact and stop. Do not manufacture a verdict for every paragraph.
 - If this section is a comparison or timeline, build it from evidence rows only:
-  a plain-text table using | separators, or lines of YEAR: Event [N] — consequence.
+  a plain-text table using | separators, or lines of YEAR: Event [N] - consequence.
 - Aim for roughly {SECTION_MIN_WORDS} words, but only as far as the evidence carries you.
   A shorter, fully-grounded section beats a padded one.
 - No opening throat-clearing, no closing summary. Start on the first substantive fact.
 
 Write the section now:""")
-        ]).content
+        ], stage=f"section_{i+1}:{sec_title[:30]}").content
         section = strip_slop(section)
         # Normalize section header in case model added extra text before it
         if f"## SECTION: {sec_title}" not in section:
             section = f"## SECTION: {sec_title}\n{section}"
         return section
 
-    workers = max(1, min(SECTION_WORKERS, len(section_topics)))
+    workers = len(section_topics)
     emit(state, "architect", "Writing sections", 0, len(section_topics))
     sections = [""] * len(section_topics)
     written = 0
@@ -935,9 +983,9 @@ Write ONLY the final synthesis section.
 ## SYNTHESIS
 [150-200 words. Reveal a non-obvious connection across all the themes covered.
 What does the data collectively suggest that no single section states explicitly?
-Include a contrarian take — something that challenges the dominant narrative of the report.
+Include a contrarian take - something that challenges the dominant narrative of the report.
 Be specific and opinionated, and tie each claim to the [N] that supports it. No vague conclusions.]""")
-    ]).content
+    ], stage="architect:synthesis").content
     synthesis = strip_slop(synthesis)
 
     raw_report = header + "\n\n" + "\n\n".join(sections) + "\n\n" + synthesis
@@ -972,7 +1020,7 @@ def _numbers_in(text: str) -> List[str]:
             # Version strings ("2.3.2") and the like are not quantities.
             continue
         # Single digits and trivial values match almost any text; ignore them.
-        # A decimal is never trivial though — "$1.05 billion" is exactly the
+        # A decimal is never trivial though - "$1.05 billion" is exactly the
         # kind of figure worth checking, and the old floor of 2 threw it away.
         if len(clean) > 1 and (value >= 2 or "." in clean):
             out.append(clean)
@@ -1114,7 +1162,7 @@ class SectionMetrics:
 
     @property
     def density(self) -> float:
-        """Sourced figures per 100 words — how much of the prose carries content."""
+        """Sourced figures per 100 words - how much of the prose carries content."""
         return 100.0 * self.figures / self.words if self.words else 0.0
 
     @property
@@ -1151,8 +1199,8 @@ def measure_sections(
     """Measure each section against the crawled sources instead of eyeballing it.
 
     The critic used to score prose it had no way to verify, so its number was a
-    guess. Everything countable — citation coverage, corroboration, fact density,
-    facts recycled from an earlier section — is settled here, deterministically.
+    guess. Everything countable - citation coverage, corroboration, fact density,
+    facts recycled from an earlier section - is settled here, deterministically.
     """
     corpus = " ".join(source_texts.values())
     valid_ids = set(source_index.keys())
@@ -1250,8 +1298,8 @@ def rubric_score(metrics: List[SectionMetrics]) -> Tuple[int, List[str]]:
 def audit_node(state: AgentState):
     """Measure the report, then ask the model only what measurement cannot answer.
 
-    Scoring and weak-section triage share one LLM call — they used to be two round
-    trips over the same text — and the score itself is no longer part of that call.
+    Scoring and weak-section triage share one LLM call - they used to be two round
+    trips over the same text - and the score itself is no longer part of that call.
     """
     iteration = state.get("iteration", 1)
     print(f"\n[AUDIT] Scoring report and triaging weak sections - iteration {iteration}...")
@@ -1282,7 +1330,7 @@ def audit_node(state: AgentState):
             f"MEASURED (already verified against the sources):\n{measured}\n\n"
             f"REPORT SECTIONS:\n{bodies}"
         ))
-    ])
+    ], stage="audit")
     if audit is None:
         print("  [AUDIT] All keys rate limited, using measured score only...")
         audit = ReportAudit(score=score, gaps=[], follow_up_queries=[], verdict="APPROVED")
@@ -1309,7 +1357,7 @@ def audit_node(state: AgentState):
     if audit.gaps:
         print(f"  Gaps: {', '.join(audit.gaps[:2])}")
     for w in weak:
-        print(f"  Weak: {w.section[:60]} — {w.problem}")
+        print(f"  Weak: {w.section[:60]} - {w.problem}")
     if not weak:
         print("  No section failed review; skipping rewrite.")
 
@@ -1332,7 +1380,7 @@ def refine_node(state: AgentState):
     }
 
 # A refine pass re-runs the crawler and the whole architect (~7 more LLM calls),
-# so it is only worth it when the report is genuinely thin — not merely when a
+# so it is only worth it when the report is genuinely thin - not merely when a
 # harsh critic asks for more.
 REFINE_GROUNDING_FLOOR = float(os.getenv("REFINE_GROUNDING_FLOOR", "0.75"))
 MAX_REFINE_ITERATIONS = int(os.getenv("MAX_REFINE_ITERATIONS", "2"))
@@ -1353,7 +1401,7 @@ def should_refine(state: AgentState) -> str:
         return "export"
     return "refine"
 
-# ── PDF HELPERS ────────────────────────────────────────────────────────────────
+# â”€â”€ PDF HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def sanitize(text: str) -> str:
     replacements = {
         "\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"',
@@ -1379,7 +1427,7 @@ def draw_line(pdf, w, r=180, g=180, b=180):
     pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + w, pdf.get_y())
     pdf.ln(3)
 
-# ── PDF EXPORT ─────────────────────────────────────────────────────────────────
+# â”€â”€ PDF EXPORT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def clean_body(text: str) -> str:
     """Strip leaked markdown headers and extra blank lines from section body."""
     import re
@@ -1400,7 +1448,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
     title_match = re.search(r'##\s*TITLE\s*\n(.+)', raw_report)
     title = title_match.group(1).strip() if title_match else topic
 
-    # ── COVER PAGE ────────────────────────────────────────────────────────────
+    # â”€â”€ COVER PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     pdf.add_page()
     pdf.set_fill_color(20, 20, 20)
     pdf.rect(0, 0, 210, 8, "F")
@@ -1452,7 +1500,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
     pdf.set_fill_color(20, 20, 20)
     pdf.rect(0, 287, 210, 10, "F")
 
-    # ── EXECUTIVE SUMMARY ─────────────────────────────────────────────────────
+    # â”€â”€ EXECUTIVE SUMMARY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     exec_match = re.search(r'EXECUTIVE_SUMMARY[:\s]*\n(.*?)(?=\n##\s+SECTION|\Z)', raw_report, re.DOTALL)
     if exec_match:
         pdf.add_page()
@@ -1465,7 +1513,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
         pdf.set_text_color(30, 30, 30)
         pdf.multi_cell(w, 6, sanitize(clean_body(exec_match.group(1))))
 
-    # ── SECTIONS (no page break between — just a divider) ─────────────────────
+    # â”€â”€ SECTIONS (no page break between - just a divider) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     section_blocks = re.findall(
         r'##\s+SECTION:\s*(.+?)\n(.*?)(?=\n##\s+SECTION:|##\s+SYNTHESIS|\Z)',
         raw_report, re.DOTALL
@@ -1486,7 +1534,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
         pdf.set_text_color(30, 30, 30)
         pdf.multi_cell(w, 6, sanitize(clean_body(sec_body)))
 
-    # ── SYNTHESIS ─────────────────────────────────────────────────────────────
+    # â”€â”€ SYNTHESIS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     synth_match = re.search(r'##\s+SYNTHESIS\s*\n(.*?)(?=\n##|\Z)', raw_report, re.DOTALL)
     if synth_match:
         pdf.ln(6)
@@ -1500,7 +1548,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
         pdf.set_text_color(30, 30, 30)
         pdf.multi_cell(w, 6, sanitize(clean_body(synth_match.group(1))))
 
-    # ── VERIFIED SOURCES (2 columns, compact) ─────────────────────────────────
+    # â”€â”€ VERIFIED SOURCES (2 columns, compact) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 13)
     pdf.set_text_color(20, 20, 20)
@@ -1533,7 +1581,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
 
     mid_y = pdf.get_y()
 
-    # Right column — reset to start_y, offset by col_w + gap
+    # Right column - reset to start_y, offset by col_w + gap
     pdf.set_xy(pdf.l_margin + col_w + 4, start_y)
     for sid in right_col:
         if pdf.get_y() > 270:
@@ -1596,7 +1644,7 @@ SPECIFIC CHALLENGE TO ADDRESS:
 {challenge_text}
 
 Rewrite this section now, directly addressing the challenge:""")
-    ]).content
+    ], stage=f"rewrite:{sec_title[:30]}").content
     rewritten = strip_slop(rewritten)
     # Rewrites were coming back as summaries of the original. A shorter section
     # is only accepted when it was stripping unsupported material, which the
@@ -1674,7 +1722,7 @@ def targeted_rewrite_node(state: AgentState):
     return {"raw_report": updated_report}
 
 
-# ── GRAPH ──────────────────────────────────────────────────────────────────────
+# â”€â”€ GRAPH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 builder = StateGraph(AgentState)
 builder.add_node("strategist",          strategist_node)
 builder.add_node("commander_review",    hitl_node)
@@ -1697,7 +1745,7 @@ builder.add_edge("refine",             "crawler")
 
 app = builder.compile(checkpointer=memory, interrupt_before=["commander_review"])
 
-# ── MAIN ───────────────────────────────────────────────────────────────────────
+# â”€â”€ MAIN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
     import sys
 
@@ -1738,5 +1786,6 @@ if __name__ == "__main__":
         print("[DONE] Research saved.")
     else:
         print("Mission aborted.")
+
 
 
