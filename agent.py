@@ -957,6 +957,7 @@ Write the section now:""")
         return section
 
     workers = len(section_topics)
+    print(f"  [PARALLEL] Starting all {workers} sections simultaneously...")
     emit(state, "architect", "Writing sections", 0, len(section_topics))
     sections = [""] * len(section_topics)
     written = 0
@@ -1686,6 +1687,7 @@ def targeted_rewrite_node(state: AgentState):
     if not jobs:
         return {}
 
+    print(f"  [PARALLEL] Starting all {len(jobs)} rewrites simultaneously...")
     emit(state, "targeted_rewrite", "Rewriting flagged sections", 0, len(jobs))
     rewrites = [""] * len(jobs)
     completed = 0
