@@ -292,6 +292,8 @@ memory = SqliteSaver(conn)
 class ResearchPlan(BaseModel):
     queries: List[str] = Field(description="10-15 high-precision search queries covering different angles.")
     reasoning: str = Field(description="Why these queries were chosen and what gaps they cover.")
+    topic_category: str = Field(default="Other", description="One of: Person, Company, Technology, Event, History, Science, Finance, Sports, Politics, Other")
+    search_domains: List[str] = Field(default_factory=list, description="List of 8-12 most relevant domains for this topic.")
 
 class CitedFact(BaseModel):
     """A hard fact with its source ID. Used as sidebar data points."""
@@ -358,6 +360,7 @@ class ReportAudit(QualityVerdict):
 class AgentState(Dict):
     topic: str
     plan: ResearchPlan
+    search_domains: List[str]
     raw_data: str
     raw_report: str
     source_index: Dict[int, str]
@@ -371,20 +374,86 @@ class AgentState(Dict):
     research_rounds: int
 
 # â”€â”€ SYSTEM PROMPTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-STRATEGIST_PROMPT = """You are an elite intelligence analyst. Build a comprehensive research plan.
-Generate 10-15 search queries covering:
-- Technical specifications and hard metrics
-- Historical timeline with specific dates and events
-- Key figures, engineers, decision-makers
-- Comparative analysis and bottlenecks
-- Failures, weaknesses, and overlooked angles
-Every query must target a specific data point. No generic queries.
+STRATEGIST_PROMPT = """
+You are an elite research planning specialist and intelligence analyst in a multi-agent AI research system.
 
-At least three queries must go after the document the numbers originally came from,
-not an article describing it. Name the artefact in the query - annual report, 10-K or
-other regulator filing, court judgment, official statistics release, standards document,
-technical specification, arXiv paper, transcript. A retelling loses figures and gains
-errors; the filing has the table."""
+Your output will be passed directly to a web crawler. The quality of the final research report depends heavily on the precision, depth, quantitative rigor, and coverage of your search queries.
+
+Your objective is to create a research plan that yields a 9.5+ quality report by capturing both high-level system architecture and granular, hard-data metrics.
+
+==================================================
+PART 1 — CLASSIFY AND TARGET DOMAINS
+==================================================
+
+Classify the topic as exactly one of:
+Person, Company, Technology, Event, History, Science, Finance, Sports, Politics, Other
+
+Select 8-12 authoritative search domains tailored to this category. Combine primary technical/official sources with reputable secondary coverage.
+
+Domain Guidelines by Category:
+- Technology: arxiv.org, ieee.org, github.com, techcrunch.com, wired.com, arstechnica.com, nvidia.com, anandtech.com, systemdesign.one, pragprog.com, official engineering blogs
+- Company: sec.gov, annualreports.com, bloomberg.com, reuters.com, ft.com, wsj.com, techcrunch.com, crunchbase.com
+- Science: nature.com, science.org, pubmed.ncbi.nlm.nih.gov, sciencedirect.com, arxiv.org, newscientist.com
+- Finance: sec.gov, bloomberg.com, reuters.com, ft.com, wsj.com, investopedia.com, imf.org
+- Person/Sports: espn.com, bbc.com, goal.com, transfermarkt.com, theathletic.com, sportingnews.com
+- Person/Business/Politics: bloomberg.com, forbes.com, ft.com, reuters.com, politico.com, nytimes.com, theguardian.com
+- History/Event: britannica.com, bbc.com, reuters.com, apnews.com, history.com, smithsonianmag.com
+
+Select domains that have a realistic chance of containing primary-source evidence for the query.
+
+==================================================
+PART 2 — BUILD A MULTI-ANGLE RESEARCH MAP
+==================================================
+
+Identify the critical research angles needed to build a comprehensive report. Ensure your strategy accounts for both system/macro workflows and exact quantitative metrics:
+
+1. Core Architecture & System Workflows (Request lifecycles, routing, orchestration, microservices, safety/moderation guardrails)
+2. Quantitative Data & Metrics (Exact dataset sizes, token counts, filtering ratios, memory/compute specs, energy/draw metrics)
+3. Infrastructure & Low-Level Hardware Execution (Tensor parallelism, GPU sharding, inter-connects like NVLink/InfiniBand, kernel optimizations, caching)
+4. Developer API & Operational Engineering (Endpoint constraints, fine-tuning mechanisms like RLHF/PPO, rate limits, latency trade-offs)
+5. Timeline, Origins & Strategic Milestones
+6. Failures, Bottlenecks, Edge-Case Trade-offs, and Limitations
+7. Primary-Source Evidence & Recent Developments
+
+==================================================
+PART 3 — GENERATE HIGH-PRECISION SEARCH QUERIES
+==================================================
+
+Generate 10-15 high-precision, non-redundant search queries.
+
+Requirements for Strong Queries:
+- Target specific entities, mechanisms, and technical terminology.
+- Include measurable quantities, dates, named decisions, or official paper titles where applicable.
+- Require concrete evidence rather than surface summaries.
+
+Strictly Avoid Vague Queries Such As:
+- "What is X?"
+- "X system design"
+- "X training data"
+- "How does X work?"
+
+Query Optimization Examples:
+- Poor: "ChatGPT system design"
+  Better: "ChatGPT request lifecycle CDN edge API gateway prompt budget calculator SSE token streaming"
+- Poor: "GPT-4 training dataset size"
+  Better: "Common Crawl raw terabytes filtered gigabytes BPE token count pre-training mixture ratio"
+- Poor: "ChatGPT GPU serving"
+  Better: "GPT-4 tensor parallelism GPU layer sharding NVLink InfiniBand latency provisioned throughput"
+
+Ensure queries collectively cover macro system orchestration AND micro hardware/data parameters without overlapping.
+
+==================================================
+PART 4 — QUALITY CHECK
+==================================================
+
+Before returning the plan, verify:
+- Do the queries target exact numerical statistics AND functional mechanics?
+- Are different research angles covered without redundant queries?
+- Are primary engineering/academic sources targeted where appropriate?
+- Will these queries direct the crawler to actionable technical evidence?
+
+Return ONLY the structured ResearchPlan fields.
+"""
 
 CRITIC_PROMPT = """You are a research quality auditor. Grounding, citation coverage,
 fact density and repetition have already been measured against the crawled sources and are
@@ -405,8 +474,43 @@ Separately, list gaps: data points the report needs that the sources plainly do 
 topic with the material it has, return no gaps."""
 
 # â”€â”€ NODES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+# Node timing tracker
+_node_timings = {}
+
+def _node_start(name: str) -> float:
+    t = time.monotonic()
+    _node_timings[name] = {"start": t, "end": None, "duration": None}
+    return t
+
+def _node_end(name: str, start: float):
+    end = time.monotonic()
+    duration = end - start
+    _node_timings[name]["end"] = end
+    _node_timings[name]["duration"] = duration
+    print(f"  [{name.upper()} DONE] {duration:.1f}s")
+
+def print_node_timing_summary():
+    if not _node_timings:
+        return
+    print("\n" + "=" * 50)
+    print("  NODE TIMING SUMMARY")
+    print("=" * 50)
+    print(f"  {'Node':<22} {'Time':>8}")
+    print(f"  {'-'*22} {'-'*8}")
+    total = 0.0
+    for name, t in _node_timings.items():
+        d = t.get("duration")
+        if d is not None:
+            print(f"  {name:<22} {d:>7.1f}s")
+            total += d
+    print(f"  {'-'*22} {'-'*8}")
+    print(f"  {'TOTAL':<22} {total:>7.1f}s")
+    print("=" * 50)
+
 def strategist_node(state: AgentState):
     print("\n[STRATEGIST] Building search vectors...")
+    _t = _node_start("strategist")
     memory_context = query_memory(state["topic"])
     print(f"  Memory: {'found past research' if memory_context else 'starting fresh'}")
 
@@ -420,9 +524,11 @@ def strategist_node(state: AgentState):
         raise RateLimitExhausted(
             "All API keys are currently rate limited. Please try again in 5 minutes."
         )
-    print(f"  {len(plan.queries)} queries planned")
+    print(f"  {len(plan.queries)} queries planned | category: {plan.topic_category} | domains: {len(plan.search_domains)}")
+    _node_end("strategist", _t)
     return {
         "plan": plan,
+        "search_domains": plan.search_domains,
         "iteration": 1,
         "research_rounds": 0,
         "source_index": {},
@@ -441,11 +547,10 @@ def deep_fetch(url: str, max_chars: int = 5000) -> str:
     """Fetch full page content from a URL. Falls back gracefully."""
     try:
         headers = {"User-Agent": "Mozilla/5.0 (compatible; ResearchBot/1.0)"}
-        resp = requests.get(url, headers=headers, timeout=8)
+        resp = requests.get(url, headers=headers, timeout=4)
         if resp.status_code != 200:
             return ""
         text = resp.text
-        # Strip HTML tags simply
         import re
         text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL)
         text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.DOTALL)
@@ -478,21 +583,8 @@ def source_tier(url: str) -> int:
     return 1
 
 # Search and page fetches are network-bound and have no shared state, so they
-# run concurrently. IDs are still assigned in query order afterwards, which
-# keeps citation numbers stable regardless of which request finishes first.
-CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "5"))
-DEEP_FETCH_LIMIT = int(os.getenv("DEEP_FETCH_LIMIT", "12"))
-# How many primary/official sources a round should land before we accept the
-# crawl. Below this the report is built entirely on retellings of the numbers.
-PRIMARY_FLOOR = int(os.getenv("PRIMARY_FLOOR", "5"))
-# Domains the top-up round is restricted to. Broad enough that most topics hit
-# something, narrow enough that everything returned is an original record.
-PRIMARY_DOMAINS = [
-    "sec.gov", "annualreports.com", "arxiv.org", "nasa.gov", "nist.gov",
-    "europa.eu", "who.int", "imf.org", "worldbank.org", "oecd.org", "bis.org",
-    "rbi.org.in", "npci.org.in", "gov.uk", "congress.gov", "courtlistener.com",
-    "ntsb.gov", "faa.gov", "bls.gov", "census.gov", "eur-lex.europa.eu",
-]
+# All queries run in parallel — workers match query count
+DEEP_FETCH_LIMIT = int(os.getenv("DEEP_FETCH_LIMIT", "8"))
 
 def emit(state, stage: str, detail: str = "", done=None, total=None):
     """Report real pipeline progress to whoever is watching (the API, the CLI).
@@ -509,7 +601,7 @@ def emit(state, stage: str, detail: str = "", done=None, total=None):
         pass
 
 def _search_one(query: str, include_domains: Optional[List[str]] = None):
-    """Run one search query. Never raises - a dead query must not kill the crawl."""
+    """Run one search query with domain filtering. Never raises."""
     try:
         response = get_web_search(include_domains).invoke(query)
         return response.get("results", []) if isinstance(response, dict) else response
@@ -534,7 +626,9 @@ def interleave(results_per_query: List[list]) -> list:
 def crawler_node(state: AgentState):
     queries = state['plan'].queries
     rounds = state.get("research_rounds", 0) + 1
-    print(f"\n[CRAWLER] Round {rounds} - {len(queries)} queries ({CRAWL_WORKERS} at a time)...")
+    search_domains = state.get("search_domains") or []
+    print(f"\n[CRAWLER] Round {rounds} - {len(queries)} queries | domains: {search_domains[:3]}...")
+    _t = _node_start(f"crawler_round{rounds}")
 
     source_index: Dict[int, str] = {}
     source_titles: Dict[int, str] = {}
@@ -549,61 +643,72 @@ def crawler_node(state: AgentState):
     emit(state, "crawler", "Searching the web", 0, len(queries))
     results_per_query = [[] for _ in queries]
     finished = 0
-    with ThreadPoolExecutor(max_workers=min(CRAWL_WORKERS, max(len(queries), 1))) as pool:
-        futures = {pool.submit(_search_one, q): i for i, q in enumerate(queries)}
+    workers = max(len(queries), 1)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_search_one, q, search_domains): i for i, q in enumerate(queries)}
         for fut in as_completed(futures):
-            # Results are stored by query index, so citation numbering stays
-            # stable even though completion order is arbitrary.
             results_per_query[futures[fut]] = fut.result()
             finished += 1
             emit(state, "crawler", "Searching the web", finished, len(queries))
 
-    # Top up with original records when the round came back as mostly commentary.
-    primary_found = sum(
-        1 for items in results_per_query for r in items
-        if source_tier((r.get("url") or "")) == 0
+    # Skip low-quality sources that add noise
+    SKIP_DOMAINS = (
+        "facebook.com", "instagram.com", "twitter.com", "x.com",
+        "tiktok.com", "reddit.com", "quora.com", "pinterest.com",
+        "youtube.com", "linkedin.com/feed", "linkedin.com/posts",
     )
-    if primary_found < PRIMARY_FLOOR and queries:
-        targeted = queries[:3]
-        print(f"  Only {primary_found} primary sources; re-running {len(targeted)} "
-              "queries against official domains...")
-        emit(state, "crawler", "Looking for original records", 0, len(targeted))
-        with ThreadPoolExecutor(max_workers=len(targeted)) as pool:
-            futures = [pool.submit(_search_one, q, PRIMARY_DOMAINS) for q in targeted]
-            for done_n, fut in enumerate(as_completed(futures), 1):
-                results_per_query.append(fut.result())
-                emit(state, "crawler", "Looking for original records", done_n, len(targeted))
+
+    # Topic keywords for relevance scoring
+    topic_keywords = set(re.findall(r'[a-z0-9]+', state.get("topic", "").lower()))
+    topic_keywords -= {"the", "a", "an", "of", "in", "on", "and", "or", "for", "to", "is", "was"}
+
+    def is_relevant(url: str, title: str) -> bool:
+        """Skip garbage sources. Keep anything with keyword overlap in title."""
+        u = url.lower()
+        # Skip known noise domains
+        if any(d in u for d in SKIP_DOMAINS):
+            return False
+        # Title relevance check — must share at least 1 keyword with topic
+        if topic_keywords:
+            title_words = set(re.findall(r'[a-z0-9]+', title.lower()))
+            if not topic_keywords & title_words:
+                return False
+        return True
 
     seen_urls = set(source_index.values())
-    new_sources = []  # (sid, url, title, snippet)
+    new_sources = []
     per_query_sources: List[list] = []
+    skipped = 0
     for items in results_per_query:
         from_this_query = []
         for r in items:
             url = (r.get("url") or "").strip()
+            title = (r.get("title") or url)[:80]
             if not url or url in seen_urls:
+                continue
+            if not is_relevant(url, title):
+                skipped += 1
                 continue
             seen_urls.add(url)
             sid = len(source_index) + 1
             source_index[sid] = url
-            title = (r.get("title") or url)[:80]
             source_titles[sid] = title
             entry = (sid, url, title, (r.get("raw_content") or r.get("content") or "")[:600])
             new_sources.append(entry)
             from_this_query.append(entry)
         per_query_sources.append(from_this_query)
 
+    print(f"  {len(new_sources)} sources indexed, {skipped} irrelevant sources skipped")
+
     # Deep fetch the most authoritative sources first - official/primary domains
     # are where the hard numbers live, so they get the full-page fetch budget.
     # Within a tier, take one source per query in turn so the budget covers the
     # whole plan rather than the first query's results.
     ranked = sorted(interleave(per_query_sources), key=lambda s: source_tier(s[1]))
-    skip_markers = ("youtube.com", "twitter.com", "linkedin.com", ".pdf", "reddit.com")
-    # Fetches fail often (paywalls, timeouts), so try extras to actually land
-    # DEEP_FETCH_LIMIT pages of full text.
+    skip_markers = ("youtube.com", "twitter.com", "linkedin.com", ".pdf", "reddit.com", "facebook.com", "instagram.com")
     to_fetch = [
         s for s in ranked if not any(x in s[1] for x in skip_markers)
-    ][:DEEP_FETCH_LIMIT + 6]
+    ][:DEEP_FETCH_LIMIT]
 
     print(f"  Deep fetching {len(to_fetch)} top sources in parallel...")
     fetched = {}
@@ -651,13 +756,15 @@ def crawler_node(state: AgentState):
 
     existing_raw = state.get("raw_data", "")
     combined = existing_raw + f"\n\n=== ROUND {rounds} ===\n\n" + "\n---\n".join(raw_chunks)
-    return {
+    result = {
         "raw_data": combined,
         "source_index": source_index,
         "source_titles": source_titles,
         "source_texts": source_texts,
         "research_rounds": rounds,
     }
+    _node_end(f"crawler_round{rounds}", _t)
+    return result
 
 # Phrases the model reaches for when it has nothing concrete to say. Banned in
 # the prompts and stripped from output if they survive.
@@ -831,6 +938,7 @@ def strip_slop(text: str) -> str:
 
 def architect_node(state: AgentState):
     print("\n[ARCHITECT] Writing research report section by section...")
+    _t = _node_start("architect")
 
     source_index = {int(k): v for k, v in state["source_index"].items()}
     source_titles = {int(k): v for k, v in (state.get("source_titles") or {}).items()}
@@ -863,41 +971,17 @@ RAW DATA:
     banned = "; ".join(f'"{p}"' for p in SLOP_PHRASES)
     section_system = (
         "You are a senior investigative journalist writing for IEEE Spectrum or MIT Technology Review. "
-        "Write only what the supplied evidence supports. "
-        "Every number, date, name, and percentage you write MUST appear in the EVIDENCE text you were given, "
-        "cited with the [N] of the source it came from. If the evidence does not contain a figure, write about "
-        "what the evidence does say instead of estimating, rounding, or recalling it from memory. "
-        "Attribute claims to the organisation that produced the data (e.g. RBI, NPCI), never to the blogger who repeated it. "
+        "Cite every specific fact (number, date, name) with its [N] source inline. "
+        "For background and context you may use your knowledge — just do not present uncited claims as sourced facts. "
+        "When evidence is thin on a specific detail, write what IS known rather than announcing what is missing. "
+        "Never write 'the sources do not report', 'no information is available', or similar phrases. "
+        "Attribute specific data to the organisation that produced it, not the blogger who repeated it. "
         f"Never use these filler phrases: {banned}. "
-        "Do not end sections with a summary or conclusion paragraph. Do not restate a point you already made. "
-        "No bullet points. Length follows the evidence - stop when the evidence is used up rather than padding."
+        "Do not end sections with a summary. Do not restate a point you already made. "
+        "No bullet points. Write flowing prose."
     )
 
-    # Step 1: Write title, key findings, executive summary
-    print("  Writing header (title, findings, summary)...")
-    emit(state, "architect", "Writing title, key findings and summary")
-    header = llm_invoke_with_rotation([
-        SystemMessage(content=section_system),
-        HumanMessage(content=f"""{context_block}
-
-Write ONLY the following three parts, nothing else:
-
-## TITLE
-[A specific, descriptive title for this research report]
-
-## KEY_FINDINGS
-1. [Finding with hard fact and citation]
-2. [Finding with hard fact and citation]
-3. [Finding with hard fact and citation]
-4. [Finding with hard fact and citation]
-5. [Finding with hard fact and citation]
-
-## EXECUTIVE_SUMMARY
-[200-250 words. Written for a senior decision-maker. Cover what was investigated, the 3 most critical findings with specific metrics, and the strategic implication. Every figure must come from the sources above and carry its [N].]""")
-    ], stage="architect:header").content
-    header = strip_slop(header)
-
-    # Step 2: Write each section independently, in parallel
+    # Step 1: Plan sections first
     emit(state, "architect", "Planning report sections")
     ceiling = evidence_section_ceiling(source_texts)
     section_topics = generate_section_topics(topic, raw, ceiling)
@@ -908,13 +992,28 @@ Write ONLY the following three parts, nothing else:
 
     def write_section(index_and_title):
         i, sec_title = index_and_title
-        # Sections are written concurrently, so each one is told what the others
-        # cover instead of relying on already-written text to avoid overlap.
         other_titles = "\n".join(
             f"- {t}" for j, t in enumerate(section_topics) if j != i
         )
         sids = section_sources[i]
         evidence = build_evidence_block(sids, source_index, source_titles, source_texts)
+
+        # Thin evidence recovery — if evidence is too short, do one targeted search
+        if len(evidence.split()) < 400 and not state.get("_skip_recovery"):
+            print(f"  [THIN EVIDENCE] Section '{sec_title[:40]}' — doing targeted search...")
+            try:
+                targeted_query = f"{topic} {sec_title}"
+                extra_results = _search_one(targeted_query, state.get("search_domains") or [])
+                extra_text = " ".join(
+                    (r.get("raw_content") or r.get("content") or "")[:600]
+                    for r in extra_results[:3]
+                )
+                if extra_text.strip():
+                    evidence = evidence + f"\n\nADDITIONAL CONTEXT:\n{extra_text[:2000]}"
+                    print(f"  [RECOVERED] Added {len(extra_text.split())} words for '{sec_title[:40]}'")
+            except Exception as e:
+                print(f"  [RECOVERY FAILED] {e}")
+
         print(f"  Writing section {i + 1}/{len(section_topics)}: {sec_title} "
               f"(sources {', '.join(str(s) for s in sids)})...")
         section = llm_invoke_with_rotation([
@@ -935,17 +1034,14 @@ An event that belongs to another section's subject is theirs to narrate. If you 
 refer to it in a single clause and move on - never re-tell it.
 
 How to write it:
-- Ground every claim in the EVIDENCE above and cite it inline as [N]. A sentence with a
-  number, date, or name and no [N] is not acceptable.
-- If the evidence lacks a figure you want, say what is missing ("the crawled sources do not
-  report X") rather than supplying a number from memory.
+- Ground every specific claim (number, date, name) in the EVIDENCE above and cite it inline as [N].
+- If the evidence is thin on a specific detail, write what IS known from the evidence instead of announcing what is missing. Never write phrases like "the sources do not report" or "no information is available" — just write what you know.
+- Use your knowledge of the topic to provide context and analysis around the cited facts. You may use general knowledge for background and explanation, but every specific claim must be cited.
 - Explain mechanism: what caused what, who decided it, what it cost, what followed.
-- Where the evidence supports a judgment, make it and say which fact drives it. Where it does
-  not, describe the fact and stop. Do not manufacture a verdict for every paragraph.
+- Where the evidence supports a judgment, make it and say which fact drives it.
 - If this section is a comparison or timeline, build it from evidence rows only:
   a plain-text table using | separators, or lines of YEAR: Event [N] - consequence.
-- Aim for roughly {SECTION_MIN_WORDS} words, but only as far as the evidence carries you.
-  A shorter, fully-grounded section beats a padded one.
+- Aim for roughly {SECTION_MIN_WORDS} words.
 - No opening throat-clearing, no closing summary. Start on the first substantive fact.
 
 Write the section now:""")
@@ -972,20 +1068,73 @@ Write the section now:""")
             written += 1
             emit(state, "architect", f"Wrote: {section_topics[i]}", written, len(section_topics))
 
-    # Step 3: Write synthesis
+    # Step 2: Write header AFTER sections — key findings extracted from real section content
+    print("  Writing header (title, findings, summary) from finished sections...")
+    emit(state, "architect", "Writing title, key findings and summary")
+
+    # Give the header writer the finished section content, not raw crawl data
+    sections_for_header = "\n\n".join(
+        f"SECTION: {section_topics[i]}\n{sections[i][:800].strip()}"
+        for i in range(len(sections))
+    )
+
+    header = llm_invoke_with_rotation([
+        SystemMessage(content=section_system),
+        HumanMessage(content=f"""TOPIC: {topic}
+
+SOURCE INDEX (for citations):
+{index_str}
+
+FINISHED REPORT SECTIONS (extract key findings from these):
+{sections_for_header}
+
+Write ONLY the following three parts, nothing else:
+
+## TITLE
+[A specific, descriptive title for this research report]
+
+## KEY_FINDINGS
+1. [Most important finding with specific fact and [N] citation — extracted from the sections above]
+2. [Second finding with specific fact and [N] citation]
+3. [Third finding with specific fact and [N] citation]
+4. [Fourth finding with specific fact and [N] citation]
+5. [Fifth finding with specific fact and [N] citation]
+
+## EXECUTIVE_SUMMARY
+[200-250 words. Written for a senior decision-maker. Cover what was investigated, the 3 most critical findings with specific metrics, and the strategic implication. Draw only from the section content above.]""")
+    ], stage="architect:header").content
+    header = strip_slop(header)
+
+    # Step 3: Write synthesis from the actual written sections, not raw data
     print("  Writing synthesis...")
     emit(state, "architect", "Writing cross-section synthesis")
+
+    # Build synthesis context from section titles + first 300 chars of each section
+    # This prevents cross-report hallucination from raw_data bleed
+    section_summaries = "\n\n".join(
+        f"SECTION: {section_topics[i]}\n{sections[i][:300].strip()}..."
+        for i in range(len(sections))
+    )
+
     synthesis = llm_invoke_with_rotation([
-        SystemMessage(content=section_system),
-        HumanMessage(content=f"""{context_block}
+        SystemMessage(content=(
+            "You are writing the final synthesis of a research report. "
+            "You must ONLY draw from the section summaries provided below. "
+            "Do not reference any topic, product, person, or event not mentioned in these sections. "
+            "Do not compare to unrelated domains like hardware engineering or military history unless the topic is about those things."
+        )),
+        HumanMessage(content=f"""TOPIC: {topic}
+
+SECTION SUMMARIES (this is your ONLY source material):
+{section_summaries}
 
 Write ONLY the final synthesis section.
 
 ## SYNTHESIS
-[150-200 words. Reveal a non-obvious connection across all the themes covered.
+[150-200 words. Reveal a non-obvious connection across the themes covered in the sections above.
 What does the data collectively suggest that no single section states explicitly?
-Include a contrarian take - something that challenges the dominant narrative of the report.
-Be specific and opinionated, and tie each claim to the [N] that supports it. No vague conclusions.]""")
+Include a contrarian take that challenges the dominant narrative.
+Stay strictly on topic — only reference what appears in the sections above.]""")
     ], stage="architect:synthesis").content
     synthesis = strip_slop(synthesis)
 
@@ -996,6 +1145,7 @@ Be specific and opinionated, and tie each claim to the [N] that supports it. No 
     with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
         f.write(raw_report)
 
+    _node_end("architect", _t)
     return {"raw_report": raw_report}
 
 STRIP_UNVERIFIED = os.getenv("STRIP_UNVERIFIED", "1") != "0"
@@ -1068,7 +1218,7 @@ def _co_occurs(numbers: List[str], haystack: str, window: int = CLAIM_WINDOW) ->
         for a in hits[anchor]
     )
 
-def verify_claims(raw_report: str, source_texts: Dict[int, str], source_index: Dict[int, str]):
+def verify_claims(raw_report: str, source_texts: Dict[int, str], source_index: Dict[int, str], claim_window: int = CLAIM_WINDOW):
     """Strip sentences whose figures no source actually supports.
 
     The old check only asked whether a cited [N] existed in the index, so an
@@ -1103,7 +1253,7 @@ def verify_claims(raw_report: str, source_texts: Dict[int, str], source_index: D
             # fallback when the cited pages could not be read at all, otherwise
             # a claim could borrow support from a source it never pointed at.
             haystack = cited_text.strip() or corpus
-            if _co_occurs(numbers, haystack):
+            if _co_occurs(numbers, haystack, window=claim_window):
                 kept_sentences.append(sentence)
             else:
                 if all(_corroborated(n, haystack) for n in numbers):
@@ -1129,9 +1279,17 @@ def verify_claims(raw_report: str, source_texts: Dict[int, str], source_index: D
 
 def factcheck_node(state: AgentState):
     print("\n[FACTCHECK] Verifying citations against source text...")
+    _t = _node_start("factcheck")
     source_texts = {int(k): v for k, v in (state.get("source_texts") or {}).items()}
     source_index = {int(k): v for k, v in state["source_index"].items()}
-    cleaned, stats = verify_claims(state.get("raw_report", ""), source_texts, source_index)
+
+    # For narrative topics use relaxed window — biographical facts spread across pages
+    plan = state.get("plan")
+    topic_category = getattr(plan, "topic_category", "Other") if plan else "Other"
+    narrative_categories = {"Person", "Sports", "History", "Politics", "Event"}
+    claim_window = 800 if topic_category in narrative_categories else CLAIM_WINDOW
+
+    cleaned, stats = verify_claims(state.get("raw_report", ""), source_texts, source_index, claim_window=claim_window)
 
     print(f"  {stats['checked']} factual sentences checked | grounding {stats['grounding']:.0%}"
           f" | {len(stats['unverified'])} unsupported"
@@ -1144,6 +1302,7 @@ def factcheck_node(state: AgentState):
     emit(state, "factcheck",
          f"{stats['checked']} factual claims checked, {stats['grounding']:.0%} grounded",
          stats["checked"] - len(stats["unverified"]), stats["checked"])
+    _node_end("factcheck", _t)
     return {"raw_report": cleaned, "grounding": stats["grounding"]}
 
 MAX_WEAK_SECTIONS = int(os.getenv("MAX_WEAK_SECTIONS", "3"))
@@ -1196,6 +1355,7 @@ def measure_sections(
     raw_report: str,
     source_texts: Dict[int, str],
     source_index: Dict[int, str],
+    claim_window: int = CLAIM_WINDOW,
 ) -> List[SectionMetrics]:
     """Measure each section against the crawled sources instead of eyeballing it.
 
@@ -1225,10 +1385,7 @@ def measure_sections(
                 uncited += len(numbers)
 
             haystack = " ".join(source_texts.get(sid, "") for sid in cited) or corpus
-            # Same standard the fact-check applies: the figures of one claim
-            # must appear together, so a sentence built from two unrelated
-            # passages counts against the section.
-            in_context = _co_occurs(numbers, haystack)
+            in_context = _co_occurs(numbers, haystack, window=claim_window)
             for n in numbers:
                 if not in_context or not _corroborated(n, haystack):
                     unsupported += 1
@@ -1249,44 +1406,57 @@ def measure_sections(
     return out
 
 
-def rubric_score(metrics: List[SectionMetrics]) -> Tuple[int, List[str]]:
-    """Turn the measurements into a 1-10 score with the reasons for every point lost.
+def rubric_score(metrics: List[SectionMetrics], topic_category: str = "Other") -> Tuple[int, List[str]]:
+    """Turn the measurements into a 1-10 score.
 
-    An unanchored "be harsh" instruction made the model park on 3-4 whatever the
-    report looked like, so the number carried no information. These deductions are
-    reproducible: the same report always scores the same, and the caller can print
-    exactly which threshold cost it a point.
+    Thresholds are adjusted by topic category because a biography naturally has
+    fewer hard numbers than a technical or financial report. Penalizing a Person
+    biography for low figure density produces scores that do not reflect quality.
     """
     figures = sum(m.figures for m in metrics)
     words = sum(m.words for m in metrics)
-    if not figures or not words:
-        return 1, ["report contains no sourced figures"]
+    if not words:
+        return 1, ["report contains no content"]
 
-    cite_rate = 1.0 - sum(m.uncited for m in metrics) / figures
-    support_rate = 1.0 - sum(m.unsupported for m in metrics) / figures
-    repeat_rate = sum(m.repeated for m in metrics) / figures
+    # Topic categories that are narrative-heavy — lower figure density expected
+    narrative_categories = {"Person", "Sports", "History", "Politics", "Event"}
+    is_narrative = topic_category in narrative_categories
+    print(f"  Rubric: category={topic_category}, narrative={is_narrative}, words={words}, figures={figures}")
+
+    cite_rate = (1.0 - sum(m.uncited for m in metrics) / figures) if figures else 1.0
+    support_rate = (1.0 - sum(m.unsupported for m in metrics) / figures) if figures else 1.0
+    repeat_rate = (sum(m.repeated for m in metrics) / figures) if figures else 0.0
     density = 100.0 * figures / words
 
     score, reasons = 10, []
 
+    # Citation coverage — same for all topics
     for floor, penalty in ((0.70, 3), (0.85, 2), (0.95, 1)):
         if cite_rate < floor:
             score -= penalty
             reasons.append(f"-{penalty} citation coverage {cite_rate:.0%}")
             break
 
+    # Corroboration — same for all topics
     for floor, penalty in ((0.60, 3), (0.75, 2), (0.90, 1)):
         if support_rate < floor:
             score -= penalty
             reasons.append(f"-{penalty} only {support_rate:.0%} of figures corroborated")
             break
 
-    for floor, penalty in ((0.5, 3), (1.0, 2), (1.5, 1)):
+    # Figure density — relaxed for narrative/biography topics
+    if is_narrative:
+        density_floors = ((0.2, 2), (0.5, 1))
+    else:
+        density_floors = ((0.5, 3), (1.0, 2), (1.5, 1))
+
+    for floor, penalty in density_floors:
         if density < floor:
             score -= penalty
             reasons.append(f"-{penalty} {density:.1f} figures per 100 words")
             break
 
+    # Repetition — same for all topics
     for ceiling, penalty in ((0.35, 3), (0.20, 2), (0.10, 1)):
         if repeat_rate > ceiling:
             score -= penalty
@@ -1304,12 +1474,20 @@ def audit_node(state: AgentState):
     """
     iteration = state.get("iteration", 1)
     print(f"\n[AUDIT] Scoring report and triaging weak sections - iteration {iteration}...")
+    _t = _node_start("audit")
     raw = state.get("raw_report", "")
     source_texts = {int(k): v for k, v in (state.get("source_texts") or {}).items()}
     source_index = {int(k): v for k, v in (state.get("source_index") or {}).items()}
 
-    metrics = measure_sections(raw, source_texts, source_index)
-    score, reasons = rubric_score(metrics)
+    plan = state.get("plan")
+    topic_category = getattr(plan, "topic_category", "Other") if plan else "Other"
+    narrative_categories = {"Person", "Sports", "History", "Politics", "Event"}
+    is_narrative = topic_category in narrative_categories
+    claim_window = 800 if is_narrative else CLAIM_WINDOW
+    print(f"  Topic category for scoring: {topic_category} | narrative: {is_narrative} | window: {claim_window}")
+
+    metrics = measure_sections(raw, source_texts, source_index, claim_window=claim_window)
+    score, reasons = rubric_score(metrics, topic_category)
 
     measured = "\n".join(
         f"- \"{m.title}\": {m.words} words, {m.figures} figures, "
@@ -1364,6 +1542,7 @@ def audit_node(state: AgentState):
 
     emit(state, "audit",
          f"Scored {audit.score}/10, {len(weak)} section(s) flagged for rewrite")
+    _node_end("audit", _t)
     return {
         "quality": audit,
         "weak_sections": weak,
@@ -1373,10 +1552,14 @@ def audit_node(state: AgentState):
 def refine_node(state: AgentState):
     verdict = state["quality"]
     print(f"\n[REFINE] {len(verdict.follow_up_queries)} follow-up queries added")
+    # Preserve topic_category and search_domains from original plan
+    original_plan = state.get("plan")
     return {
         "plan": ResearchPlan(
             queries=verdict.follow_up_queries,
-            reasoning=f"Filling gaps: {', '.join(verdict.gaps)}"
+            reasoning=f"Filling gaps: {', '.join(verdict.gaps)}",
+            topic_category=getattr(original_plan, "topic_category", "Other"),
+            search_domains=getattr(original_plan, "search_domains", []),
         )
     }
 
@@ -1615,10 +1798,27 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
     return filename
 
 def _rewrite_one(topic, sec_title, challenge_text, existing_body,
-                 source_index, source_titles, source_texts):
-    """Rewrite a single section against its own evidence. Runs in a worker thread."""
+                 source_index, source_titles, source_texts, search_domains=None):
+    """Rewrite a single section with fresh evidence from a targeted search."""
+
+    # Fresh targeted search for this specific section before rewriting
+    fresh_evidence = ""
+    try:
+        targeted_query = f"{topic} {sec_title}"
+        fresh_results = _search_one(targeted_query, search_domains or [])
+        fresh_texts = " ".join(
+            (r.get("raw_content") or r.get("content") or "")[:800]
+            for r in fresh_results[:4]
+        )
+        if fresh_texts.strip():
+            fresh_evidence = f"\n\nFRESH SEARCH RESULTS FOR THIS SECTION:\n{fresh_texts[:3000]}"
+            print(f"  [FRESH EVIDENCE] Added {len(fresh_texts.split())} words for rewrite: '{sec_title[:40]}'")
+    except Exception as e:
+        print(f"  [FRESH EVIDENCE FAILED] {e}")
+
     sids = select_sources(sec_title, topic, source_texts, source_titles, source_index)
     evidence = build_evidence_block(sids, source_index, source_titles, source_texts)
+    full_evidence = evidence + fresh_evidence
 
     rewritten = llm_invoke_with_rotation([
         SystemMessage(content=(
@@ -1633,8 +1833,8 @@ def _rewrite_one(topic, sec_title, challenge_text, existing_body,
         )),
         HumanMessage(content=f"""TOPIC: {topic}
 
-EVIDENCE (the only material you may draw facts from):
-{evidence}
+EVIDENCE (draw facts from here — includes fresh search results):
+{full_evidence}
 
 SECTION TO REWRITE: {sec_title}
 
@@ -1658,6 +1858,7 @@ Rewrite this section now, directly addressing the challenge:""")
 
 def targeted_rewrite_node(state: AgentState):
     print("\n[REWRITER] Fixing challenged sections...")
+    _t = _node_start("targeted_rewrite")
     weak = state.get("weak_sections") or []
     if not weak:
         print("  No weak sections flagged, skipping.")
@@ -1691,11 +1892,12 @@ def targeted_rewrite_node(state: AgentState):
     emit(state, "targeted_rewrite", "Rewriting flagged sections", 0, len(jobs))
     rewrites = [""] * len(jobs)
     completed = 0
+    search_domains = state.get("search_domains") or []
     with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
         futures = {
             pool.submit(
                 _rewrite_one, state["topic"], job[1], job[2], job[3],
-                source_index, source_titles, source_texts,
+                source_index, source_titles, source_texts, search_domains,
             ): i
             for i, job in enumerate(jobs)
         }
@@ -1721,6 +1923,7 @@ def targeted_rewrite_node(state: AgentState):
     with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
         f.write(updated_report)
 
+    _node_end("targeted_rewrite", _t)
     return {"raw_report": updated_report}
 
 

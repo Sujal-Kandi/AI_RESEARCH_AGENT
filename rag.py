@@ -222,15 +222,15 @@ def strategist_workflow(user_query: str) -> dict:
     print("\n[STEP 2] Analyzing knowledge gaps...")
     gap_analysis = analyze_knowledge_gaps(user_query, past_research)
     
-    print(f"\n📚 KNOWN AREAS:")
+    print(f"\n KNOWN AREAS:")
     for area in gap_analysis.get("known_areas", []):
         print(f"  ✓ {area}")
     
-    print(f"\n❓ KNOWLEDGE GAPS:")
+    print(f"\n KNOWLEDGE GAPS:")
     for gap in gap_analysis.get("knowledge_gaps", []):
         print(f"  • {gap}")
     
-    print(f"\n📊 SUMMARY: {gap_analysis.get('research_summary', 'N/A')}")
+    print(f"\nSUMMARY: {gap_analysis.get('research_summary', 'N/A')}")
     
     # Step 3: Generate targeted queries
     print("\n[STEP 3] Generating targeted research queries...")
@@ -239,7 +239,7 @@ def strategist_workflow(user_query: str) -> dict:
         gap_analysis.get("knowledge_gaps", [])
     )
     
-    print(f"\n🎯 TARGETED QUERIES FOR CRAWLER:")
+    print(f"\n TARGETED QUERIES FOR CRAWLER:")
     for i, query in enumerate(targeted_queries, 1):
         print(f"  {i}. {query}")
     
@@ -310,3 +310,13 @@ def clear_memory():
         print("✓ Memory cleared successfully")
     except Exception as e:
         print(f"  Failed to clear memory: {e}")
+
+
+from rag import strategist_workflow
+
+# Test the workflow
+result = strategist_workflow("Biography of Anushka Sharma")
+
+print("\n Targeted Queries to Research:")
+for query in result["targeted_queries"]:
+    print(f"  - {query}")

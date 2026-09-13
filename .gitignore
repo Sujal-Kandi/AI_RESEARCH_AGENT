@@ -8,3 +8,4 @@ __pycache__/
 venv/
 .pytest_cache/
 
+Add-Content -Path .gitignore -Value "`n__pycache__/`n*.pyc`nvector_store/`nraw_report_debug.txt"`
