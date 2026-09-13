@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
-
+from rag import query_memory, save_to_memory
 
 
 from langchain_groq import ChatGroq
@@ -20,7 +20,7 @@ from langchain_tavily import TavilySearch
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
-from rag import query_memory, save_to_memory
+
 
 
 load_dotenv(dotenv_path="/etc/secrets/.env", override=False)

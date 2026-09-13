@@ -3,7 +3,6 @@ import json
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.schema import Document
 from dotenv import load_dotenv
 
 
@@ -320,3 +319,14 @@ result = strategist_workflow("Biography of Anushka Sharma")
 print("\n Targeted Queries to Research:")
 for query in result["targeted_queries"]:
     print(f"  - {query}")
+
+
+# Add or verify these in rag.py
+def query_memory(query: str, top_k: int = 5):
+    """Retrieves relevant background context from vector store."""
+    # Your ChromaDB / vector store query logic here
+    pass
+
+def save_to_memory(text: str, metadata: dict = None):
+    """Saves text chunk to vector store."""
+    pass
