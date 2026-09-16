@@ -518,7 +518,9 @@ def strategist_node(state: AgentState):
 
     plan = _structured_invoke(ResearchPlan, [
         SystemMessage(content=STRATEGIST_PROMPT),
-        HumanMessage(content=f"Build research plan for: {state['topic']}{memory_hint}")
+        HumanMessage(content=f"Build research plan for: {state['topic']}."
+                     f"Today's date is {datetime.now().strftime(' %B %d, %Y')}."
+                     f"{memory_hint}")
     ], stage="strategist")
     if plan is None:
         raise RateLimitExhausted(
