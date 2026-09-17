@@ -21,7 +21,7 @@ vector_store = Chroma(
 )
 
 # Initialize LLM for gap analysis
-llm = ChatGroq(model="mixtral-8x7b-32768", temperature=0)
+llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
 
 
 def retrieve_past_research(query: str, k: int = 5, similarity_threshold: float = 0.6) -> dict:
@@ -310,23 +310,15 @@ def clear_memory():
     except Exception as e:
         print(f"  Failed to clear memory: {e}")
 
-
-from rag import strategist_workflow
-
-# Test the workflow
-result = strategist_workflow("Biography of Anushka Sharma")
-
-print("\n Targeted Queries to Research:")
-for query in result["targeted_queries"]:
-    print(f"  - {query}")
-
-
-# Add or verify these in rag.py
-def query_memory(query: str, top_k: int = 5):
-    """Retrieves relevant background context from vector store."""
-    # Your ChromaDB / vector store query logic here
-    pass
-
-def save_to_memory(text: str, metadata: dict = None):
-    """Saves text chunk to vector store."""
-    pass
+def query_memory(topic: str) -> str:
+    """Wraps retrieve_past_research for strategist_node's memory check.
+    Returns a short text summary the model can read directly, or "" (falsy)
+    when nothing relevant was found - matches what strategist_node expects
+    at the call site (memory_context used directly in an f-string, and
+    checked for truthiness to decide "found past research" vs "starting fresh").
+    """
+    result = retrieve_past_research(topic)
+    if not result["has_relevant_research"]:
+        return ""
+    lines = [f"- {r['topic']}: {r['content'][:200]}" for r in result["relevant_research"][:3]]
+    return "\n".join(lines)
