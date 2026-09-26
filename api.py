@@ -22,6 +22,12 @@ from auth import create_access_token, create_user, get_current_user, get_user_by
 from schemas import Token, UserData, UserLogin, UserRegister
 from database import get_conn, init_db
 
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+
+
 # rate limiter
 limiter = Limiter(key_func=get_remote_address)
 
@@ -220,12 +226,13 @@ def plan_research(
             "_state": {
                 "topic": req.topic,
                 "plan": plan,
+                "search_domains": plan.search_domains,
                 "iteration": state["iteration"],
                 "research_rounds": state["research_rounds"],
                 "source_index": state["source_index"],
                 "source_titles": state["source_titles"],
                 "source_texts": state["source_texts"],
-                "memory_context": state["memory_context"],
+                "memory_context": state["memory_context"]
             },
         })
     except Exception as e:
@@ -237,6 +244,7 @@ def plan_research(
         "topic": req.topic,
         "queries": plan.queries,
         "reasoning": plan.reasoning,
+        "search_domains": plan.search_domains,
     }
 
 
@@ -418,7 +426,9 @@ def _run_pipeline(session_id: str, username: str):
             "error": str(e),
             "current_node": "error",
         })
+        import traceback
         print(f"[PIPELINE ERROR] {e}")
+        traceback.print_exc()
 
 
 # status
@@ -508,3 +518,11 @@ def serve_ui():
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import traceback
+    print(f"[UNHANDLED ERROR] {request.url.path}: {exc}")
+    traceback.print_exc()
+    return JSONResponse(status_code=500, content={"error": str(exc)})

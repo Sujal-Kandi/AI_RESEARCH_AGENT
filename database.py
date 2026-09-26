@@ -2,17 +2,27 @@ import os
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
+import time
 
 load_dotenv(dotenv_path="/etc/secrets/.env", override=False)
 load_dotenv(dotenv_path=".env", override=False)
 
 
-def get_conn():
+def get_conn(retries=3, delay=1.5):
     url = os.getenv("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL not set in environment")
-    conn = psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
-    return conn
+    last_err = None 
+    for attempt in range(retries):
+        try:
+            return psycopg2.connect(url , cursor_factory=psycopg2.extras.RealDictCursor, connect_timeout=10)
+        except psycopg2.OperationalError as e:
+            last_err = e
+            print(f"[DB] connect attempt {attempt + 1} failed: {e}")
+            time.sleep(delay)
+
+    raise last_err
+    
 
 
 def init_db():
