@@ -786,7 +786,7 @@ def crawler_node(state: AgentState):
     if to_fetch:
         emit(state, "crawler", "Reading top sources", 0, len(to_fetch))
         done_fetch = 0
-        with ThreadPoolExecutor(max_workers=len(to_fetch)) as pool:
+        with ThreadPoolExecutor(max_workers=min(len(to_fetch),4)) as pool:
             futures = {pool.submit(deep_fetch, s[1], 4000): s[0] for s in to_fetch}
             for fut in as_completed(futures):
                 fetched[futures[fut]] = fut.result()
@@ -1134,7 +1134,7 @@ Write the section now:""")
             section = f"## SECTION: {sec_title}\n{section}"
         return section
 
-    workers = len(section_topics)
+    workers = min(len(section_topics,3))
     print(f"  [PARALLEL] Starting all {workers} sections simultaneously...")
     emit(state, "architect", "Writing sections", 0, len(section_topics))
     sections = [""] * len(section_topics)
