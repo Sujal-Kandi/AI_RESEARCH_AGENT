@@ -170,6 +170,16 @@ app.include_router(router)
 
 # in-memory session store (pipeline state lives here during processing)
 sessions: dict = {}
+SESSION_TTL_SECONDS = 2 * 60 * 60
+
+def _cleanup_old_sessions():
+    now = time.time()
+    stale = [sid for sid , s in sessions.items()
+             if s.get("_created_at") and now - s["_created_at"] > SESSION_TTL_SECONDS]
+    for sid in stale:
+        sessions.pop(sid , None)
+    if stale:
+        print(f"[CLEANUP] Removed {len(stale)} stale sessions")
 
 
 class PlanRequest(BaseModel):
@@ -196,6 +206,7 @@ def plan_research(
         print(f"[IMPORT ERROR] agent.py failed to import:\n{tb}")
         raise HTTPException(status_code=500, detail=f"Agent import failed: {str(e)}")
 
+    _cleanup_old_sessions()
     session_id = str(uuid.uuid4())
     sessions[session_id] = {
         "status": "planning",
@@ -212,6 +223,7 @@ def plan_research(
         "pdf_filename": None,
         "error": None,
         "owner": current_user.username,
+        "_created_at": time.time()
     }
 
     try:
@@ -401,6 +413,7 @@ def _run_pipeline(session_id: str, username: str):
 
         # save to PostgreSQL history
         _save_report_to_db(username, state["topic"], pdf_bytes, pdf_filename)
+        sessions[session_id].pop("_state", None)  #already in DB - drop the heavy crawl data from RAM 
 
         session.update({
             "status": "done",
