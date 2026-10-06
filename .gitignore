@@ -1,16 +1,32 @@
-
+# Environment
 .env
-.env 
 .env.example
 
+# Python
 __pycache__/
 *.pyc
-venv/
+*.pyo
 .pytest_cache/
+venv/
+.venv/
 
-Add-Content -Path .gitignore -Value "`n__pycache__/`n*.pyc`nvector_store/`nraw_report_debug.txt"`
+# Vector store — binary files, never commit
+vector_store/
 
-__pycache__/
-*.pyc
-vector_store/*.sqlite3
+# Database files
+*.db
+
+# Debug output
 raw_report_debug.txt
+
+# Generated reports
+REPORT_*.pdf
+REPORT_*
+
+# Kiro session files
+*.zip
+prev_session/
+kiro-session-*
+
+# Nested git repos
+researchagent/

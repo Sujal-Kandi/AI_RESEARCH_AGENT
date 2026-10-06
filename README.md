@@ -1,3 +1,15 @@
+---
+title: AI Research Agent
+emoji: 🔎
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+app_file: app.py
+pinned: false
+---
+
+
+
 # AI Research Agent
 
 A multi-agent research system that autonomously plans, crawls, writes, self-critiques, and exports publication-ready research reports as PDFs.

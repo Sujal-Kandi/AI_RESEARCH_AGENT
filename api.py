@@ -407,9 +407,20 @@ def _run_pipeline(session_id: str, username: str):
         pdf_filename = Path(pdf_path).name
 
         # print token summary to Render logs
-        from agent import print_token_summary, print_node_timing_summary
+        from agent import print_token_summary, print_node_timing_summary, save_to_memory as _save_memory
         print_token_summary()
         print_node_timing_summary()
+
+        # save research to long-term RAG memory (non-fatal if it fails)
+        try:
+            _save_memory(
+                state["topic"],
+                state.get("raw_report", "")[:3000],
+                list((state.get("source_index") or {}).values()),
+            )
+            print(f"[MEMORY] Saved research for: {state['topic']}")
+        except Exception as mem_err:
+            print(f"[MEMORY] Save failed (non-fatal): {mem_err}")
 
         # save to PostgreSQL history
         _save_report_to_db(username, state["topic"], pdf_bytes, pdf_filename)

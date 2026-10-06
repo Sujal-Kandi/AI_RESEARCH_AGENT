@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import sqlite3
 import requests
@@ -12,8 +12,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
-from rag import query_memory , save_to_memory 
-from pydantic import field_validator 
+from rag import query_memory , save_to_memory
 
 from langchain_groq import ChatGroq
 from langchain_tavily import TavilySearch
@@ -37,7 +36,7 @@ if os.path.exists(_secret_path):
                 if not os.environ.get(_k.strip()):
                     os.environ[_k.strip()] = _v.strip()
 
-# â”€â”€ TOOLS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- TOOLS ---------------------------------------------------------------------
 def get_web_search(include_domains: Optional[List[str]] = None):
     return TavilySearch(
         max_results=6,
@@ -51,12 +50,12 @@ def make_llm(key: str):
 
 
 
-# â”€â”€ CUSTOM EXCEPTIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- CUSTOM EXCEPTIONS ---------------------------------------------------------
 class RateLimitExhausted(Exception):
     """Raised when all LLM API keys are rate limited and no fallback is available."""
     pass
 
-# â”€â”€ LLM with key rotation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- LLM with key rotation -----------------------------------------------------
 _groq_keys = []
 _key_index = 0
 # Key index -> monotonic timestamp when that key is expected to be usable again.
@@ -284,13 +283,13 @@ def _rotate_key():
         _key_index = (_key_index + 1) % len(_groq_keys)
         llm = make_llm(_groq_keys[_key_index])
         _llm_generation += 1
-# â”€â”€ PERSISTENCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- PERSISTENCE ---------------------------------------------------------------
 conn = sqlite3.connect("research_memory.db", check_same_thread=False)
 memory = SqliteSaver(conn)
 
-# â”€â”€ SCHEMAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- SCHEMAS -------------------------------------------------------------------
 class ResearchPlan(BaseModel):
-    queries: List[str] = Field(description="10-15 high-precision search queries covering different angles.")
+    queries: List[str] = Field(description="7-8 high-precision search queries covering different angles. No more than 8.")
     reasoning: str = Field(description="Why these queries were chosen and what gaps they cover.")
     topic_category: str = Field(default="Other", description="One of: Person, Company, Technology, Event, History, Science, Finance, Sports, Politics, Other")
     search_domains: List[str] = Field(default_factory=list, description="List of 8-12 most relevant domains for this topic.")
@@ -374,7 +373,7 @@ class AgentState(Dict):
     iteration: int
     research_rounds: int
 
-# â”€â”€ SYSTEM PROMPTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- SYSTEM PROMPTS -------------------------------------------------------------
 STRATEGIST_PROMPT = """
 You are an elite research planning specialist and intelligence analyst in a multi-agent AI research system.
 
@@ -440,8 +439,8 @@ end up manufactured from scraps instead of built from real sources found up fron
 PART 3 — GENERATE HIGH-PRECISION SEARCH QUERIES
 ==================================================
 
-Generate 10-15 high-precision, non-redundant queries. Each should map to a distinct angle above -
-if two queries would return the same fact area, merge or drop one.
+Generate 7-8 high-precision, non-redundant queries. Each should map to a distinct angle above -
+if two queries would return the same fact area, merge or drop one. Strict maximum: 8 queries.
 
 Requirements for Strong Queries:
 - Target specific entities, mechanisms, or named events.
@@ -500,7 +499,7 @@ Separately, list gaps: data points the report needs that the sources plainly do 
 (a rewrite cannot invent them). Give a follow-up query for each. If the report answers its
 topic with the material it has, return no gaps."""
 
-# â”€â”€ NODES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- NODES ----------------------------------------------------------------------
 
 # Node timing tracker
 _node_timings = {}
@@ -618,11 +617,25 @@ def deep_fetch(url: str, max_chars: int = 5000) -> str:
 
 # Domains whose numbers can be trusted over a random blog post. Ranked highest
 # when a section has more candidate sources than it can fit in context.
+# IMPORTANT: ".gov" alone is too broad — it matches forms.gov, mail.gov, etc.
+# Only specific known-authoritative .gov subdomains are whitelisted here.
 PRIMARY_SOURCE_MARKERS = (
-    ".gov", ".gov.in", ".gov.uk", ".edu", ".ac.", ".int",
-    "rbi.org", "npci.org", "bis.org", "imf.org", "worldbank.org", "oecd.org",
-    "who.int", "europa.eu", "nature.com", "science.org", "arxiv.org",
-    "ieee.org", "acm.org", "sec.gov", "investor.", "nasa.gov", "nist.gov",
+    # Specific trusted .gov agencies (NOT a blanket .gov match)
+    "sec.gov", "bls.gov", "census.gov", "cdc.gov", "nih.gov", "nasa.gov",
+    "nist.gov", "faa.gov", "ntsb.gov", "congress.gov", "supremecourt.gov",
+    "federalreserve.gov", "treasury.gov", "justice.gov", "energy.gov",
+    "epa.gov", "fda.gov", "ftc.gov", "doj.gov", "state.gov", "whitehouse.gov",
+    # UK/EU/India government
+    "gov.uk", ".gov.in", "eur-lex.europa.eu", "europa.eu",
+    "rbi.org", "npci.org", "sebi.gov.in", "pib.gov.in",
+    # Academic & intergovernmental
+    ".edu", ".ac.uk", ".ac.in", ".int",
+    "bis.org", "imf.org", "worldbank.org", "oecd.org", "who.int",
+    # Science & standards
+    "nature.com", "science.org", "arxiv.org", "ieee.org", "acm.org",
+    "pubmed.ncbi.nlm.nih.gov", "sciencedirect.com",
+    # Finance primary
+    "investor.", "annualreports.com",
 )
 BLOG_MARKERS = (
     "medium.com", "substack.com", "blogspot.", "wordpress.", "quora.com",
@@ -650,7 +663,7 @@ def source_tier(url: str, topic_domains: Optional[List[str]] = None) -> int:
 
 # Search and page fetches are network-bound and have no shared state, so they
 # All queries run in parallel — workers match query count
-DEEP_FETCH_LIMIT = int(os.getenv("DEEP_FETCH_LIMIT", "8"))
+DEEP_FETCH_LIMIT = int(os.getenv("DEEP_FETCH_LIMIT", "5"))
 
 def emit(state, stage: str, detail: str = "", done=None, total=None):
     """Report real pipeline progress to whoever is watching (the API, the CLI).
@@ -729,24 +742,45 @@ def crawler_node(state: AgentState):
         "youtube.com", "linkedin.com/feed", "linkedin.com/posts",
     )
 
-    # Topic keywords for relevance scoring
-    topic_keywords = set(re.findall(r'[a-z0-9]+', state.get("topic", "").lower()))
-    topic_keywords -= {"the", "a", "an", "of", "in", "on", "and", "or", "for", "to", "is", "was"}
+    # Topic keywords for relevance scoring — split multi-word topics into parts
+    # e.g. "Salman Khan" → {"salman", "khan"} — ALL must appear, not just one
+    raw_topic = state.get("topic", "").lower()
+    topic_keywords = set(re.findall(r'[a-z0-9]+', raw_topic))
+    topic_keywords -= {"the", "a", "an", "of", "in", "on", "and", "or", "for",
+                       "to", "is", "was", "biography", "report", "about", "history"}
+
+    # For person/entity topics, require ALL significant name parts to match
+    # This stops "Shah Rukh Khan Pathaan" sources appearing in a Salman Khan report
+    topic_name_parts = [w for w in topic_keywords if len(w) > 3]
 
     def is_relevant(url: str, title: str) -> bool:
-        """Skip garbage sources. Keep anything with keyword overlap in title."""
+        """Skip garbage and off-topic sources."""
         u = url.lower()
-        # Skip known noise domains
         if any(d in u for d in SKIP_DOMAINS):
             return False
-        # Title relevance check — must share at least 1 keyword with topic
-        if topic_keywords:
-            title_words = set(re.findall(r'[a-z0-9]+', title.lower()))
-            if not topic_keywords & title_words:
+        if not topic_keywords:
+            return True
+        title_and_url = (title + " " + url).lower()
+        title_words = set(re.findall(r'[a-z0-9]+', title_and_url))
+        # Must share at least 1 keyword
+        if not topic_keywords & title_words:
+            return False
+        # For multi-word topics (e.g. "Salman Khan"), require at least
+        # half the significant name parts to be present — prevents a
+        # "Shah Rukh Khan" article passing a "Salman Khan" search.
+        if len(topic_name_parts) >= 2:
+            matched = sum(1 for p in topic_name_parts if p in title_words)
+            if matched < max(1, len(topic_name_parts) // 2):
                 return False
         return True
 
-    seen_urls = set(source_index.values())
+    # Normalise URLs to catch near-duplicates (e.g. trailing slash, http vs https)
+    def _normalise_url(url: str) -> str:
+        url = url.lower().rstrip("/")
+        url = re.sub(r'^https?://', '', url)
+        return url
+
+    seen_urls = set(_normalise_url(v) for v in source_index.values())
     new_sources = []
     per_query_sources: List[list] = []
     skipped = 0
@@ -755,12 +789,15 @@ def crawler_node(state: AgentState):
         for r in items:
             url = (r.get("url") or "").strip()
             title = (r.get("title") or url)[:80]
-            if not url or url in seen_urls:
+            if not url:
+                continue
+            norm = _normalise_url(url)
+            if norm in seen_urls:
                 continue
             if not is_relevant(url, title):
                 skipped += 1
                 continue
-            seen_urls.add(url)
+            seen_urls.add(norm)
             sid = len(source_index) + 1
             source_index[sid] = url
             source_titles[sid] = title
@@ -817,7 +854,7 @@ def crawler_node(state: AgentState):
          f"{len(source_index)} sources indexed, {deep_fetch_count} read in full "
          f"({primary_read} official)")
 
-    # â”€â”€ GUARD: stop before any LLM calls if web returned nothing useful â”€â”€â”€â”€â”€â”€â”€
+    # -- GUARD: stop before any LLM calls if web returned nothing useful -------
     if len(source_index) < 3:
         raise ValueError(
             f"Not enough sources found for '{state['topic']}' ({len(source_index)} result(s)). "
@@ -911,20 +948,22 @@ Return ONLY a Python list of strings, nothing else. Example:
             titles = [t for t in ast.literal_eval(match.group()) if isinstance(t, str) and t.strip()]
             if titles:
                 return titles[:ceiling]
-    except Exception:
-        pass
-    # Fallback generic sections
-    return [
-        "Origins, Peak Dominance, and the Foundations of Later Failure",
-        "Timeline: Key Events and Turning Points",
-        "The Contrarian View: Was Failure Inevitable?",
-        "Disruption and Strategic Missteps",
-        "Comparative Analysis: Key Competitors vs Subject",
-        "Mechanics: How the Decisive Changes Actually Worked",
-        "Stakeholders: Who Gained, Who Lost, and by How Much",
-        "Counterfactuals the Evidence Supports",
-        "Legacy and Measurable Aftermath",
-    ][:ceiling]
+    except Exception as e:
+        print(f"  [SECTION TOPICS] LLM call failed ({e}), using universal fallback")
+    # Universal fallback — works for any domain (person, company, technology, event)
+    n = min(ceiling, 4)
+    base = [
+        f"Origins and Foundations: How {topic} Began",
+        f"Rise and Peak: {topic}'s Core Achievements and Defining Moments",
+        f"Challenges, Controversies, and Turning Points",
+        f"Legacy, Impact, and Enduring Influence of {topic}",
+        f"Comparative Analysis: {topic} in Context",
+        f"Timeline of Key Events",
+        f"The Contrarian View: Overlooked Weaknesses and Alternative Narratives",
+        f"Future Outlook and Unresolved Questions",
+        f"Stakeholder Impact: Who Gained and Who Lost",
+    ]
+    return base[:n]
 
 STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "from", "with",
@@ -938,20 +977,52 @@ def _keywords(text: str) -> List[str]:
 
 def select_sources(section_title: str, topic: str, source_texts: Dict[int, str],
                    source_titles: Dict[int, str], source_index: Dict[int, str],
-                   limit: int = 12, topic_domains: Optional[List[str]] = None) -> List[int]:
+                   limit: int = 12, topic_domains: Optional[List[str]] = None,
+                   section_index: int = 0, total_sections: int = 1) -> List[int]:
     """Rank sources by term overlap with the section title, then by source tier.
 
-    Each section gets its own evidence subset, so parallel sections stop
-    converging on whichever handful of facts sat at the top of the shared blob.
+    section_index and total_sections allow positional bias:
+    - First section (early life, origins, background) → prefer sources whose
+      titles/text contain temporal markers like years, 'born', 'founded', 'early',
+      'history', 'origin', 'background', 'school', 'childhood', 'debut'.
+    - Last section (legacy, impact, conclusion) → prefer sources with 'legacy',
+      'impact', 'influence', 'after', 'today', 'modern'.
+    - Middle sections get pure keyword matching.
+    This is universal — it works for people, companies, technologies, events.
     """
     terms = set(_keywords(section_title)) | set(_keywords(topic))
+
+    # Positional bias terms — universal signal words, not topic-specific
+    EARLY_SIGNALS = {"born", "founded", "established", "early", "origin", "history",
+                     "background", "school", "debut", "first", "initial", "childhood",
+                     "formative", "young", "start", "beginning", "creation"}
+    LATE_SIGNALS  = {"legacy", "impact", "influence", "after", "today", "modern",
+                     "current", "now", "conclusion", "result", "lasting", "enduring"}
+
+    is_first = section_index == 0
+    is_last  = section_index == total_sections - 1
+
     scored = []
     for sid, text in source_texts.items():
         haystack = f"{source_titles.get(sid, '')} {text}".lower()
         overlap = sum(haystack.count(t) for t in terms)
+
+        # Positional bonus — steers first section away from sources that only
+        # talk about peak/current stats, and last section away from origin stories.
+        positional_bonus = 0
+        haystack_words = set(re.findall(r'[a-z]+', haystack))
+        if is_first and haystack_words & EARLY_SIGNALS:
+            positional_bonus += 4
+        if is_last and haystack_words & LATE_SIGNALS:
+            positional_bonus += 4
+        # Penalise positional mismatch slightly
+        if is_first and haystack_words & LATE_SIGNALS and not haystack_words & EARLY_SIGNALS:
+            positional_bonus -= 2
+        if is_last and haystack_words & EARLY_SIGNALS and not haystack_words & LATE_SIGNALS:
+            positional_bonus -= 2
+
         tier = source_tier(source_index.get(sid, ""), topic_domains)
-        # Primary sources win ties; blogs need real overlap to make the cut.
-        scored.append((-(overlap + (6 if tier == 0 else 2 if tier == 1 else 0)), sid))
+        scored.append((-(overlap + positional_bonus + (6 if tier == 0 else 2 if tier == 1 else 0)), sid))
     scored.sort()
     return [sid for _, sid in scored[:limit]]
 
@@ -967,7 +1038,8 @@ def allocate_sources(section_titles: List[str], topic: str, source_texts: Dict[i
     """
     ranked = {
         i: select_sources(t, topic, source_texts, source_titles, source_index,
-                          limit=limit * 3 , topic_domains=topic_domains)
+                          limit=limit * 3, topic_domains=topic_domains,
+                          section_index=i, total_sections=len(section_titles))
         for i, t in enumerate(section_titles)
     }
     picks: Dict[int, List[int]] = {i: [] for i in ranked}
@@ -1070,72 +1142,49 @@ RAW DATA:
         topic_domains=state.get("search_domains"),
     )
 
+    # ── SECTION WRITING ────────────────────────────────────────────────────
     def write_section(index_and_title):
         i, sec_title = index_and_title
-        other_titles = "\n".join(
-            f"- {t}" for j, t in enumerate(section_topics) if j != i
-        )
         sids = section_sources[i]
         evidence = build_evidence_block(sids, source_index, source_titles, source_texts)
 
-        # Thin evidence recovery — if evidence is too short, do one targeted search
-        if len(evidence.split()) < 400 and not state.get("_skip_recovery"):
-            print(f"  [THIN EVIDENCE] Section '{sec_title[:40]}' — doing targeted search...")
-            try:
-                targeted_query = f"{topic} {sec_title}"
-                extra_results = _search_one(targeted_query, state.get("search_domains") or [])
-                extra_text = " ".join(
-                    (r.get("raw_content") or r.get("content") or "")[:600]
-                    for r in extra_results[:3]
-                )
-                if extra_text.strip():
-                    evidence = evidence + f"\n\nADDITIONAL CONTEXT:\n{extra_text[:2000]}"
-                    print(f"  [RECOVERED] Added {len(extra_text.split())} words for '{sec_title[:40]}'")
-            except Exception as e:
-                print(f"  [RECOVERY FAILED] {e}")
-
         print(f"  Writing section {i + 1}/{len(section_topics)}: {sec_title} "
               f"(sources {', '.join(str(s) for s in sids)})...")
+
+        already_covered = "\n".join(
+            f"- {t}" for j, t in enumerate(section_topics) if j != i
+        )
+
         section = llm_invoke_with_rotation([
             SystemMessage(content=section_system),
             HumanMessage(content=f"""TOPIC: {topic}
 
-EVIDENCE FOR THIS SECTION - this is the only material you may draw facts from:
+EVIDENCE FOR THIS SECTION (draw all specific facts from here):
 {evidence}
 
-Write ONLY this one section. Do not write any other sections.
+Write ONLY this one section: ## SECTION: {sec_title}
 
-## SECTION: {sec_title}
+OTHER SECTIONS IN THIS REPORT (written separately):
+{already_covered}
 
-OTHER SECTIONS IN THIS REPORT (written separately - do NOT cover their ground):
-{other_titles}
-
-An event that belongs to another section's subject is theirs to narrate. If you need it,
-refer to it in a single clause and move on - never re-tell it.
-
-How to write it:
-- Ground every specific claim (number, date, name) in the EVIDENCE above and cite it inline as [N].
-- If the evidence is thin on a specific detail, write what IS known from the evidence instead of announcing what is missing. Never write phrases like "the sources do not report" or "no information is available" — just write what you know.
-- Use your knowledge of the topic to provide context and analysis around the cited facts. You may use general knowledge for background and explanation, but every specific claim must be cited.
-- General knowledge may fill in background and explanation, but must stay non-specific. Never attach a specific year, score, or result to a named event (a tournament, an award, a series) unless that exact year-event pairing appears in the EVIDENCE above. If you're not certain the evidence supports the specific year, describe the event without the year rather than guessing one.
-- Never invent a named component , sub-system , agent , or mechanism (e.g. "the X-Router", "the Y Agent") and attach a citation to it. If the evidence does not literally name a specific component, describe its function generically without coining a name for it.
-- Explain mechanism: what caused what, who decided it, what it cost, what followed.
-- Where the evidence supports a judgment, make it and say which fact drives it.
-- If this section is a comparison or timeline, build it from evidence rows only:
-  a plain-text table using | separators, or lines of YEAR: Event [N] - consequence.
-- Aim for roughly {SECTION_MIN_WORDS} words.
-- No opening throat-clearing, no closing summary. Start on the first substantive fact.
+STRICT RULES:
+1. NEVER restate a specific number, date, or named statistic that logically belongs to another section. If "619 wickets" is the headline career stat, only the career section states it — other sections reference it in at most one clause and move on.
+2. If the evidence for this specific section is thin, write a SHORTER, focused section — do not pad with stats from other sections or with vague analysis. 150 honest words beats 400 padded words.
+3. Never write what you don't know. If this section is "Early Life" but the evidence only covers adult career stats, write only what the evidence says about early development — do not invent clubs, coaches, or childhood details.
+4. Never attach a specific year, score, or result to a named event unless that exact pairing appears in the EVIDENCE above.
+5. Every specific claim (number, date, name) must have an inline [N] citation from the evidence. General knowledge may provide context but never specific figures.
+6. No opening throat-clearing. Start on the first substantive fact.
+7. No closing summary paragraph.
 
 Write the section now:""")
         ], stage=f"section_{i+1}:{sec_title[:30]}").content
         section = strip_slop(section)
-        # Normalize section header in case model added extra text before it
         if f"## SECTION: {sec_title}" not in section:
             section = f"## SECTION: {sec_title}\n{section}"
         return section
 
-    workers = min(len(section_topics,3))
-    print(f"  [PARALLEL] Starting all {workers} sections simultaneously...")
+    workers = len(section_topics)
+    print(f"  [PARALLEL] Starting all {workers} sections simultaneously (full parallel)...")
     emit(state, "architect", "Writing sections", 0, len(section_topics))
     sections = [""] * len(section_topics)
     written = 0
@@ -1149,6 +1198,121 @@ Write the section now:""")
             sections[i] = fut.result()
             written += 1
             emit(state, "architect", f"Wrote: {section_topics[i]}", written, len(section_topics))
+
+    # ── PROSE DEDUP PASS ───────────────────────────────────────────────────
+    # Sections write in parallel so they can't see each other. This pass finds
+    # sentences that are near-identical across sections and removes duplicates
+    # from later sections, keeping the first occurrence.
+    def _sentence_fingerprints(text: str) -> Dict[str, str]:
+        """Map a normalised fingerprint → original sentence for dedup."""
+        fps = {}
+        for sent in split_sentences(text):
+            stripped = sent.strip()
+            if len(stripped.split()) < 8:   # ignore very short sentences
+                continue
+            # Normalise: lowercase, remove citations, collapse spaces
+            fp = re.sub(r'\[\d+\]', '', stripped.lower())
+            fp = re.sub(r'\s+', ' ', fp).strip()
+            fps[fp] = stripped
+        return fps
+
+    seen_fingerprints: set = set()
+    deduped_sections = []
+    total_removed = 0
+
+    for sec in sections:
+        fps = _sentence_fingerprints(sec)
+        removed = 0
+        new_sec = sec
+        for fp, original in fps.items():
+            if fp in seen_fingerprints:
+                # Remove this sentence from the section
+                new_sec = new_sec.replace(original, "", 1)
+                removed += 1
+            else:
+                seen_fingerprints.add(fp)
+        if removed:
+            # Clean up double spaces / blank lines left by removal
+            new_sec = re.sub(r'[ \t]{2,}', ' ', new_sec)
+            new_sec = re.sub(r'\n{3,}', '\n\n', new_sec)
+            total_removed += removed
+        deduped_sections.append(new_sec)
+
+    if total_removed:
+        print(f"  [PROSE DEDUP] Removed {total_removed} duplicate sentence(s) across sections")
+        sections = deduped_sections
+    # ── END PROSE DEDUP PASS ───────────────────────────────────────────────
+
+    # ── STAT CONSISTENCY PASS ──────────────────────────────────────────────
+    # Parallel sections write from different sources, so the same metric
+    # (e.g. "12,000 ODI runs" vs "11,000 ODI runs") can appear with two
+    # conflicting values. Scan all sections for numbers that are cited
+    # differently and normalise to the value with the most [N] citations.
+    def _extract_cited_numbers(text: str):
+        """Return dict of number_string → list of (section_idx, citation_ids)."""
+        found = {}
+        for m in re.finditer(r'([\d,]+(?:\.\d+)?)\s*(?:[a-zA-Z%]*)\s*(\[[\d,\s\[\]]+\])', text):
+            num_str = m.group(1).replace(",", "")
+            try:
+                val = float(num_str)
+            except ValueError:
+                continue
+            if val < 10:          # skip small numbers like "3 victories" — not stats
+                continue
+            citations = re.findall(r'\d+', m.group(2))
+            if num_str not in found:
+                found[num_str] = []
+            found[num_str].extend(citations)
+        return found
+
+    # Build per-section number→citations map
+    section_number_maps = [_extract_cited_numbers(s) for s in sections]
+
+    # Find numbers that appear in multiple sections with DIFFERENT values
+    # Only flag as conflict if the values differ by less than 20% of each other
+    # (genuine conflicts like 11,168 vs 11,000) but NOT unrelated numbers that
+    # happen to be in the same order-of-magnitude (e.g. 11,168 runs vs 13,500 salary).
+    all_numbers = {}
+    for i, nmap in enumerate(section_number_maps):
+        for num_str, cites in nmap.items():
+            val = float(num_str)
+            # Use the value itself as the key — group only truly close values
+            # by rounding to nearest 5% bracket
+            bracket = round(val / max(1, val * 0.05)) if val > 0 else 0
+            if bracket not in all_numbers:
+                all_numbers[bracket] = []
+            all_numbers[bracket].append((num_str, i, len(cites), val))
+
+    # For each bracket with conflicting values, pick winner (most citations)
+    # Extra guard: only reconcile if values are within 15% of each other —
+    # prevents replacing a precise stat with a rounded approximation from
+    # a different context (e.g. salary vs run count both near 16,000).
+    replacements = {}  # old_num_str → canonical_num_str
+    for bracket, entries in all_numbers.items():
+        unique_vals = set(e[0] for e in entries)
+        if len(unique_vals) <= 1:
+            continue
+        vals = [e[3] for e in entries]
+        min_val, max_val = min(vals), max(vals)
+        # Skip if spread > 15% — these are different stats, not conflicts
+        if min_val > 0 and (max_val - min_val) / min_val > 0.15:
+            continue
+        winner = max(entries, key=lambda e: e[2])[0]
+        for num_str, sec_idx, _, _ in entries:
+            if num_str != winner:
+                replacements[num_str] = winner
+                print(f"  [STAT RECONCILE] Conflicting '{num_str}' → normalising to '{winner}'")
+
+    if replacements:
+        reconciled = []
+        for sec in sections:
+            for old, new in replacements.items():
+                # Only replace when surrounded by non-digit chars (avoid partial matches)
+                sec = re.sub(r'(?<!\d)' + re.escape(old) + r'(?!\d)', new, sec)
+            reconciled.append(sec)
+        sections = reconciled
+        print(f"  [STAT RECONCILE] Normalised {len(replacements)} conflicting stat(s) across sections")
+    # ── END STAT CONSISTENCY PASS ───────────────────────────────────────────
 
     # Step 2: Write header AFTER sections — key findings extracted from real section content
     print("  Writing header (title, findings, summary) from finished sections...")
@@ -1238,12 +1402,76 @@ Stay strictly on topic — only reference what appears in the sections above.]""
     ], stage="architect:synthesis").content
     synthesis = strip_slop(synthesis)
 
+    # ── ENTITY FABRICATION CHECK ────────────────────────────────────────────
+    # The LLM sometimes invents named sub-systems, agents, or mechanisms
+    # (e.g. "the X-Router", "the Y Pipeline", "the Z Agent") and attaches a
+    # citation to make them look sourced. This pass detects the pattern:
+    # a capitalised "the <Word> <TechNoun>" phrase that carries a [N] citation
+    # but whose name does not appear verbatim in any source text.
+    #
+    # Pattern: "the Foo Bar" where Bar is a tech/role noun AND [N] follows,
+    # but "Foo Bar" is not in the crawled corpus.
+    FABRICATION_NOUNS = {
+        "agent", "router", "pipeline", "module", "layer", "engine", "system",
+        "node", "handler", "manager", "controller", "scheduler", "planner",
+        "selector", "dispatcher", "executor", "coordinator", "processor",
+        "framework", "component", "service", "gateway", "broker", "hub",
+    }
+    corpus_lower = " ".join(source_texts.values()).lower()
+
+    def _is_fabricated(name: str) -> bool:
+        """True if the entity name looks invented and is absent from all sources."""
+        parts = name.lower().split()
+        if not parts:
+            return False
+        # Last word must be a tech/role noun to trigger
+        if parts[-1] not in FABRICATION_NOUNS:
+            return False
+        # If the exact phrase appears in any source, it's real
+        if name.lower() in corpus_lower:
+            return False
+        # Single-word names are too common to flag (e.g. "the Agent")
+        if len(parts) < 2:
+            return False
+        return True
+
+    fabrication_pattern = re.compile(
+        r'\bthe\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*)\s*(\[\d+\])',
+    )
+
+    fabricated_found = []
+
+    def _scrub_fabrications(text: str) -> str:
+        def replacer(m):
+            entity = m.group(1)
+            citation = m.group(2)
+            if _is_fabricated(entity):
+                fabricated_found.append(entity)
+                # Remove the citation — keep the prose description but drop
+                # the fake [N] that implies it was actually sourced.
+                return f"the {entity}"
+            return m.group(0)
+        return fabrication_pattern.sub(replacer, text)
+
+    sections = [_scrub_fabrications(s) for s in sections]
+    synthesis = _scrub_fabrications(synthesis)
+
+    if fabricated_found:
+        unique = list(dict.fromkeys(fabricated_found))
+        print(f"  [FABRICATION CHECK] Removed citations from {len(unique)} likely-invented "
+              f"entities: {', '.join(unique[:5])}")
+    else:
+        print("  [FABRICATION CHECK] No fabricated entities detected.")
+    # ── END ENTITY FABRICATION CHECK ────────────────────────────────────────
+
     raw_report = header + "\n\n" + "\n\n".join(sections) + "\n\n" + synthesis
     print(f"  Total report: {len(raw_report)} chars across {len(sections)} sections")
     emit(state, "architect", f"{len(raw_report.split())} words across {len(sections)} sections")
 
-    with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
-        f.write(raw_report)
+    # Debug write — only in local/dev mode, never in production
+    if os.getenv("DEBUG_REPORTS", "0") == "1":
+        with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
+            f.write(raw_report)
 
     _node_end("architect", _t)
     return {"raw_report": raw_report}
@@ -1473,16 +1701,22 @@ class SectionMetrics:
     def repeat_rate(self) -> float:
         return self.repeated / self.figures if self.figures else 0.0
 
-    def failings(self) -> List[str]:
+    def failings(self, is_narrative: bool = False) -> List[str]:
         """Thresholds a section must clear to count as publishable on its own."""
         bad = []
         if self.figures and self.cite_rate < 0.85:
             bad.append(f"{self.uncited}/{self.figures} figures uncited")
-        if self.figures and self.support_rate < 0.8:
+        # Corroboration threshold is looser for narrative topics
+        support_floor = 0.50 if is_narrative else 0.80
+        if self.figures and self.support_rate < support_floor:
             bad.append(f"{self.unsupported}/{self.figures} figures no source carries")
-        if self.words >= 150 and self.density < 1.0:
+        # Density threshold is much lower for biography/narrative
+        density_floor = 0.3 if is_narrative else 1.0
+        if self.words >= 150 and self.density < density_floor:
             bad.append(f"only {self.density:.1f} figures per 100 words")
-        if self.repeat_rate > 0.3:
+        # Repetition tolerance is higher for narrative (canonical stats recur)
+        repeat_ceiling = 0.70 if is_narrative else 0.30
+        if self.repeat_rate > repeat_ceiling:
             bad.append(f"{self.repeated}/{self.figures} figures already used elsewhere")
         return bad
 
@@ -1573,8 +1807,15 @@ def rubric_score(metrics: List[SectionMetrics], topic_category: str = "Other") -
             reasons.append(f"-{penalty} citation coverage {cite_rate:.0%}")
             break
 
-    # Corroboration — same for all topics
-    for floor, penalty in ((0.60, 3), (0.75, 2), (0.90, 1)):
+    # Corroboration — relaxed for narrative topics because scraped snippets are
+    # short and canonical stats (619 wickets, etc.) may not co-occur in a 800-char
+    # window even though they are genuinely sourced.
+    if is_narrative:
+        corroboration_floors = ((0.40, 2), (0.60, 1))
+    else:
+        corroboration_floors = ((0.60, 3), (0.75, 2), (0.90, 1))
+
+    for floor, penalty in corroboration_floors:
         if support_rate < floor:
             score -= penalty
             reasons.append(f"-{penalty} only {support_rate:.0%} of figures corroborated")
@@ -1592,8 +1833,14 @@ def rubric_score(metrics: List[SectionMetrics], topic_category: str = "Other") -
             reasons.append(f"-{penalty} {density:.1f} figures per 100 words")
             break
 
-    # Repetition — same for all topics
-    for ceiling, penalty in ((0.35, 3), (0.20, 2), (0.10, 1)):
+    # Repetition — narrative reports legitimately restate canonical subject stats
+    # (e.g. "619 wickets" is the thesis, not padding). Only penalize heavy repetition.
+    if is_narrative:
+        repetition_ceilings = ((0.70, 2), (0.55, 1))
+    else:
+        repetition_ceilings = ((0.35, 3), (0.20, 2), (0.10, 1))
+
+    for ceiling, penalty in repetition_ceilings:
         if repeat_rate > ceiling:
             score -= penalty
             reasons.append(f"-{penalty} {repeat_rate:.0%} of figures repeat an earlier section")
@@ -1619,7 +1866,7 @@ def audit_node(state: AgentState):
     topic_category = getattr(plan, "topic_category", "Other") if plan else "Other"
     narrative_categories = {"Person", "Sports", "History", "Politics", "Event"}
     is_narrative = topic_category in narrative_categories
-    claim_window = 800 if is_narrative else CLAIM_WINDOW
+    claim_window = 1500 if is_narrative else CLAIM_WINDOW
     print(f"  Topic category for scoring: {topic_category} | narrative: {is_narrative} | window: {claim_window}")
 
     metrics = measure_sections(raw, source_texts, source_index, claim_window=claim_window)
@@ -1629,7 +1876,7 @@ def audit_node(state: AgentState):
         f"- \"{m.title}\": {m.words} words, {m.figures} figures, "
         f"{m.cite_rate:.0%} cited, {m.support_rate:.0%} corroborated, "
         f"{m.density:.1f} figures/100 words"
-        + (f" | FAILS: {'; '.join(m.failings())}" if m.failings() else "")
+        + (f" | FAILS: {'; '.join(m.failings(is_narrative))}" if m.failings(is_narrative) else "")
         for m in metrics
     )
     bodies = "\n\n".join(
@@ -1652,11 +1899,11 @@ def audit_node(state: AgentState):
 
     flagged = {w.section.strip(): w for w in audit.weak_sections}
     for m in metrics:
-        if m.failings() and m.title not in flagged:
+        if m.failings(is_narrative) and m.title not in flagged:
             flagged[m.title] = SectionChallenge(
                 section=m.title,
                 problem="No specifics",
-                challenge=f"This section measures badly ({'; '.join(m.failings())}). "
+                challenge=f"This section measures badly ({'; '.join(m.failings(is_narrative))}). "
                           "Replace vague passages with figures the evidence carries.",
             )
     weak = list(flagged.values())[:MAX_WEAK_SECTIONS]
@@ -1717,11 +1964,17 @@ def should_refine(state: AgentState) -> str:
     if grounding >= REFINE_GROUNDING_FLOOR:
         print(f"  [REFINE SKIPPED] Grounding {grounding:.0%} is already solid; exporting.")
         return "export"
+    # If the rewriter already ran this iteration, don't trigger a full
+    # crawler+architect rebuild — the rewrite was the fix. Exporting is better
+    # than another 7 LLM calls for marginal gain.
+    if state.get("weak_sections") is not None and len(state.get("weak_sections", [])) == 0:
+        print(f"  [REFINE SKIPPED] Rewriter already ran this pass; exporting.")
+        return "export"
     if not verdict.follow_up_queries:
         return "export"
     return "refine"
 
-# â”€â”€ PDF HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- PDF HELPERS ----------------------------------------------------------------
 def sanitize(text: str) -> str:
     replacements = {
         "\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"',
@@ -1747,7 +2000,7 @@ def draw_line(pdf, w, r=180, g=180, b=180):
     pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + w, pdf.get_y())
     pdf.ln(3)
 
-# â”€â”€ PDF EXPORT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- PDF EXPORT -----------------------------------------------------------------
 def clean_body(text: str) -> str:
     """Strip leaked markdown headers and extra blank lines from section body."""
     import re
@@ -1768,7 +2021,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
     title_match = re.search(r'##\s*TITLE\s*\n(.+)', raw_report)
     title = title_match.group(1).strip() if title_match else topic
 
-    # â”€â”€ COVER PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- COVER PAGE ------------------------------------------------------------
     pdf.add_page()
     pdf.set_fill_color(20, 20, 20)
     pdf.rect(0, 0, 210, 8, "F")
@@ -1820,7 +2073,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
     pdf.set_fill_color(20, 20, 20)
     pdf.rect(0, 287, 210, 10, "F")
 
-    # â”€â”€ EXECUTIVE SUMMARY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- EXECUTIVE SUMMARY -----------------------------------------------------
     exec_match = re.search(r'EXECUTIVE_SUMMARY[:\s]*\n(.*?)(?=\n##\s+SECTION|\Z)', raw_report, re.DOTALL)
     if exec_match:
         pdf.add_page()
@@ -1833,7 +2086,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
         pdf.set_text_color(30, 30, 30)
         pdf.multi_cell(w, 6, sanitize(clean_body(exec_match.group(1))))
 
-    # â”€â”€ SECTIONS (no page break between - just a divider) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- SECTIONS (no page break between - just a divider) ---------------------
     section_blocks = re.findall(
         r'##\s+SECTION:\s*(.+?)\n(.*?)(?=\n##\s+SECTION:|##\s+SYNTHESIS|\Z)',
         raw_report, re.DOTALL
@@ -1854,7 +2107,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
         pdf.set_text_color(30, 30, 30)
         pdf.multi_cell(w, 6, sanitize(clean_body(sec_body)))
 
-    # â”€â”€ SYNTHESIS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- SYNTHESIS -------------------------------------------------------------
     synth_match = re.search(r'##\s+SYNTHESIS\s*\n(.*?)(?=\n##|\Z)', raw_report, re.DOTALL)
     if synth_match:
         pdf.ln(6)
@@ -1868,7 +2121,7 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
         pdf.set_text_color(30, 30, 30)
         pdf.multi_cell(w, 6, sanitize(clean_body(synth_match.group(1))))
 
-    # â”€â”€ VERIFIED SOURCES (2 columns, compact) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # -- VERIFIED SOURCES (2 columns, compact) ---------------------------------
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 13)
     pdf.set_text_color(20, 20, 20)
@@ -1935,26 +2188,10 @@ def export_to_pdf(raw_report: str, source_index: Dict, source_titles: Dict, topi
 
 def _rewrite_one(topic, sec_title, challenge_text, existing_body,
                  source_index, source_titles, source_texts, search_domains=None):
-    """Rewrite a single section with fresh evidence from a targeted search."""
-
-    # Fresh targeted search for this specific section before rewriting
-    fresh_evidence = ""
-    try:
-        targeted_query = f"{topic} {sec_title}"
-        fresh_results = _search_one(targeted_query, search_domains or [])
-        fresh_texts = " ".join(
-            (r.get("raw_content") or r.get("content") or "")[:800]
-            for r in fresh_results[:4]
-        )
-        if fresh_texts.strip():
-            fresh_evidence = f"\n\nFRESH SEARCH RESULTS FOR THIS SECTION:\n{fresh_texts[:3000]}"
-            print(f"  [FRESH EVIDENCE] Added {len(fresh_texts.split())} words for rewrite: '{sec_title[:40]}'")
-    except Exception as e:
-        print(f"  [FRESH EVIDENCE FAILED] {e}")
+    """Rewrite a single section using already-crawled evidence."""
 
     sids = select_sources(sec_title, topic, source_texts, source_titles, source_index)
     evidence = build_evidence_block(sids, source_index, source_titles, source_texts)
-    full_evidence = evidence + fresh_evidence
 
     rewritten = llm_invoke_with_rotation([
         SystemMessage(content=(
@@ -1969,8 +2206,8 @@ def _rewrite_one(topic, sec_title, challenge_text, existing_body,
         )),
         HumanMessage(content=f"""TOPIC: {topic}
 
-EVIDENCE (draw facts from here — includes fresh search results):
-{full_evidence}
+EVIDENCE (draw facts from here):
+{evidence}
 
 SECTION TO REWRITE: {sec_title}
 
@@ -2056,14 +2293,18 @@ def targeted_rewrite_node(state: AgentState):
     changed = sum(1 for job, new in zip(jobs, rewrites) if new != job[3])
     print(f"  Rewrite complete. {changed}/{len(jobs)} section(s) changed.")
 
-    with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
-        f.write(updated_report)
+    # Debug write — only in local/dev mode
+    if os.getenv("DEBUG_REPORTS", "0") == "1":
+        with open("raw_report_debug.txt", "w", encoding="utf-8") as f:
+            f.write(updated_report)
 
     _node_end("targeted_rewrite", _t)
-    return {"raw_report": updated_report}
+    # Mark weak_sections as empty list (not None) so should_refine knows
+    # the rewriter already ran and can skip the full crawler+architect loop.
+    return {"raw_report": updated_report, "weak_sections": []}
 
 
-# â”€â”€ GRAPH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- GRAPH ----------------------------------------------------------------------
 builder = StateGraph(AgentState)
 builder.add_node("strategist",          strategist_node)
 builder.add_node("commander_review",    hitl_node)
@@ -2086,7 +2327,7 @@ builder.add_edge("refine",             "crawler")
 
 app = builder.compile(checkpointer=memory, interrupt_before=["commander_review"])
 
-# â”€â”€ MAIN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- MAIN -----------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
 
