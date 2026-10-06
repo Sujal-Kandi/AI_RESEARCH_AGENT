@@ -11,24 +11,43 @@ load_dotenv(dotenv_path=".env") or load_dotenv(dotenv_path="..env")
 CHROMA_PATH = "./vector_store"
 COLLECTION_NAME = "research_memory"
 
-# Use real semantic embeddings instead of FakeEmbeddings
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+# Lazy-loaded — models are only initialized when RAG is actually called.
+# This saves ~90MB of RAM at startup for every request that doesn't use memory.
+_embeddings = None
+_vector_store = None
+_llm = None
 
-vector_store = Chroma(
-    collection_name=COLLECTION_NAME,
-    embedding_function=embeddings,
-    persist_directory=CHROMA_PATH,
-)
 
-# Initialize LLM for gap analysis
-llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+def _get_embeddings() -> HuggingFaceEmbeddings:
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    return _embeddings
+
+
+def _get_vector_store() -> Chroma:
+    global _vector_store
+    if _vector_store is None:
+        _vector_store = Chroma(
+            collection_name=COLLECTION_NAME,
+            embedding_function=_get_embeddings(),
+            persist_directory=CHROMA_PATH,
+        )
+    return _vector_store
+
+
+def _get_llm() -> ChatGroq:
+    global _llm
+    if _llm is None:
+        _llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+    return _llm
 
 
 def retrieve_past_research(query: str, k: int = 5, similarity_threshold: float = 0.6) -> dict:
     """
     Retrieve past research with similarity scores.
     Only returns results above the threshold to avoid irrelevant matches.
-    
+
     Returns:
     {
         "relevant_research": [{"topic": str, "content": str, "score": float}],
@@ -36,19 +55,17 @@ def retrieve_past_research(query: str, k: int = 5, similarity_threshold: float =
     }
     """
     try:
-        # Use similarity_search_with_scores to get relevance scores
-        results = vector_store.similarity_search_with_scores(query, k=k)
-        
+        results = _get_vector_store().similarity_search_with_scores(query, k=k)
+
         relevant = []
         for doc, score in results:
-            # Only include if above threshold
             if score >= similarity_threshold:
                 relevant.append({
                     "topic": doc.metadata.get("topic", "unknown"),
                     "content": doc.page_content,
                     "score": float(score)
                 })
-        
+
         return {
             "relevant_research": relevant,
             "has_relevant_research": len(relevant) > 0
@@ -64,7 +81,7 @@ def retrieve_past_research(query: str, k: int = 5, similarity_threshold: float =
 def analyze_knowledge_gaps(user_query: str, past_research: list) -> dict:
     """
     Use LLM to analyze what we know and what gaps exist.
-    
+
     Returns:
     {
         "known_areas": [str],
@@ -97,7 +114,7 @@ Format as JSON:
                 f"- Topic: {r['topic']}\n  Content: {r['content'][:300]}...\n  Relevance Score: {r['score']:.2f}"
                 for r in past_research
             ])
-            
+
             gap_analysis_prompt = f"""
 Query: {user_query}
 
@@ -117,21 +134,19 @@ Format as JSON:
 }}
 """
 
-        response = llm.invoke(gap_analysis_prompt)
-        
-        # Parse LLM response
+        response = _get_llm().invoke(gap_analysis_prompt)
+
         try:
             analysis = json.loads(response.content)
         except json.JSONDecodeError:
-            # Fallback if LLM doesn't return valid JSON
             analysis = {
                 "known_areas": ["Could not parse previous research"],
                 "knowledge_gaps": ["Comprehensive research needed"],
                 "research_summary": response.content
             }
-        
+
         return analysis
-    
+
     except Exception as e:
         print(f"  Gap analysis failed: {e}")
         return {
@@ -144,13 +159,13 @@ Format as JSON:
 def generate_targeted_queries(user_query: str, knowledge_gaps: list, num_queries: int = 5) -> list:
     """
     Generate specific research queries to fill identified knowledge gaps.
-    
+
     Returns:
     ["query1", "query2", ...]
     """
     try:
         gaps_text = "\n".join([f"- {gap}" for gap in knowledge_gaps])
-        
+
         query_generation_prompt = f"""
 Original Query: {user_query}
 
@@ -166,19 +181,18 @@ Generate {num_queries} specific, targeted research queries that:
 Return ONLY a JSON array of strings (no markdown, no extra text):
 ["query1", "query2", "query3", ...]
 """
-        
-        response = llm.invoke(query_generation_prompt)
-        
+
+        response = _get_llm().invoke(query_generation_prompt)
+
         try:
             queries = json.loads(response.content)
             if isinstance(queries, list):
                 return queries[:num_queries]
         except json.JSONDecodeError:
             pass
-        
-        # Fallback: return simple queries if LLM fails
+
         return [f"{user_query} - {gap}" for gap in knowledge_gaps[:num_queries]]
-    
+
     except Exception as e:
         print(f"  Query generation failed: {e}")
         return [user_query]
@@ -190,58 +204,45 @@ def strategist_workflow(user_query: str) -> dict:
     1. Retrieve past research
     2. Analyze knowledge gaps
     3. Generate targeted queries
-    
-    Returns:
-    {
-        "user_query": str,
-        "past_research": [...],
-        "known_areas": [...],
-        "knowledge_gaps": [...],
-        "research_summary": str,
-        "targeted_queries": [...]
-    }
     """
     print(f"\n{'='*60}")
     print(f"STRATEGIST WORKFLOW: {user_query}")
     print(f"{'='*60}\n")
-    
-    # Step 1: Retrieve past research
+
     print("[STEP 1] Retrieving past research...")
     past_research_result = retrieve_past_research(user_query)
     past_research = past_research_result["relevant_research"]
-    
+
     if past_research_result["has_relevant_research"]:
         print(f"✓ Found {len(past_research)} relevant past research items")
         for item in past_research:
             print(f"  - {item['topic']} (relevance: {item['score']:.2f})")
     else:
         print("✗ No relevant past research found - starting fresh")
-    
-    # Step 2: Analyze knowledge gaps
+
     print("\n[STEP 2] Analyzing knowledge gaps...")
     gap_analysis = analyze_knowledge_gaps(user_query, past_research)
-    
+
     print(f"\n KNOWN AREAS:")
     for area in gap_analysis.get("known_areas", []):
         print(f"  ✓ {area}")
-    
+
     print(f"\n KNOWLEDGE GAPS:")
     for gap in gap_analysis.get("knowledge_gaps", []):
         print(f"  • {gap}")
-    
+
     print(f"\nSUMMARY: {gap_analysis.get('research_summary', 'N/A')}")
-    
-    # Step 3: Generate targeted queries
+
     print("\n[STEP 3] Generating targeted research queries...")
     targeted_queries = generate_targeted_queries(
         user_query,
         gap_analysis.get("knowledge_gaps", [])
     )
-    
+
     print(f"\n TARGETED QUERIES FOR CRAWLER:")
     for i, query in enumerate(targeted_queries, 1):
         print(f"  {i}. {query}")
-    
+
     return {
         "user_query": user_query,
         "past_research": past_research,
@@ -253,28 +254,17 @@ def strategist_workflow(user_query: str) -> dict:
 
 
 def save_to_memory(topic: str, dossier_text: str, sources: list, person: str = "default"):
-    """
-    Persist completed research into vector store for future reuse.
-    
-    Args:
-        topic: Research topic/title
-        dossier_text: Full research content
-        sources: List of sources used
-        person: Optional person/user identifier for multi-user scenarios
-    """
+    """Persist completed research into vector store for future reuse."""
     try:
-        # Smart chunking: preserve context while splitting
-        # Use 1500 chars per chunk for better semantic coherence
         chunk_size = 1500
         overlap = 200
         chunks = []
-        
+
         for i in range(0, len(dossier_text), chunk_size - overlap):
             chunk = dossier_text[i:i + chunk_size]
-            if len(chunk.strip()) > 100:  # Only add meaningful chunks
+            if len(chunk.strip()) > 100:
                 chunks.append(chunk)
-        
-        # Add metadata for better retrieval and multi-user support
+
         metadatas = [
             {
                 "topic": topic,
@@ -284,38 +274,31 @@ def save_to_memory(topic: str, dossier_text: str, sources: list, person: str = "
             }
             for i, _ in enumerate(chunks)
         ]
-        
-        # Add documents to vector store
-        vector_store.add_texts(texts=chunks, metadatas=metadatas)
-        
+
+        _get_vector_store().add_texts(texts=chunks, metadatas=metadatas)
+
         print(f"\n✓ Saved {len(chunks)} chunks to memory for: '{topic}' (person: {person})")
         print(f"  Sources: {', '.join(sources[:3])}")
-    
+
     except Exception as e:
         print(f"  RAG save failed: {e}")
 
 
 def clear_memory():
-    """Clear all stored research (use with caution!)"""
+    """Clear all stored research (use with caution)."""
+    global _vector_store
     try:
-        # Reset the vector store
-        global vector_store
-        vector_store.delete_collection()
-        vector_store = Chroma(
-            collection_name=COLLECTION_NAME,
-            embedding_function=embeddings,
-            persist_directory=CHROMA_PATH,
-        )
+        _get_vector_store().delete_collection()
+        _vector_store = None
         print("✓ Memory cleared successfully")
     except Exception as e:
         print(f"  Failed to clear memory: {e}")
 
+
 def query_memory(topic: str) -> str:
-    """Wraps retrieve_past_research for strategist_node's memory check.
-    Returns a short text summary the model can read directly, or "" (falsy)
-    when nothing relevant was found - matches what strategist_node expects
-    at the call site (memory_context used directly in an f-string, and
-    checked for truthiness to decide "found past research" vs "starting fresh").
+    """
+    Used by strategist_node to check if this topic was researched before.
+    Returns a short text summary or empty string if nothing found.
     """
     result = retrieve_past_research(topic)
     if not result["has_relevant_research"]:
