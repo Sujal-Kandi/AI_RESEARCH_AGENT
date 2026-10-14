@@ -22,6 +22,9 @@ Critical facts still need human review.
 
 
 
+https://github.com/user-attachments/assets/97e76f4d-85f3-4029-98cc-4d9ce14377c8
+
+
 
 
 ## Sample reports
