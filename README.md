@@ -16,6 +16,17 @@ review step, and persistent research memory.
 The output is a research draft—not independently verified publication.
 Critical facts still need human review.
 
+## Sample reports
+
+These reports were generated using the current version of this pipeline.
+They demonstrate the output format and workflow. Generated reports should
+still be reviewed before being used for important decisions.
+
+https://github.com/Sujal-Kandi/AI_RESEARCH_AGENT/blob/main/REPORT_FROM_TRADING_HOUSE_TO_CHIPMAKER_SA.pdf
+https://github.com/Sujal-Kandi/AI_RESEARCH_AGENT/blob/main/REPORT_SUBHAS_CHANDRA_BOSE_FROM_EARLY_SCH.pdf
+https://github.com/Sujal-Kandi/AI_RESEARCH_AGENT/blob/main/REPORT_FROM_VILLAGE_GREENS_TO_GLOBAL_SPECT.pdf
+
+
 ## Contents
 
 - [What it produces](#what-it-produces)
