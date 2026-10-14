@@ -16,6 +16,14 @@ review step, and persistent research memory.
 The output is a research draft—not independently verified publication.
 Critical facts still need human review.
 
+<img width="1886" height="906" alt="{75928C0B-246B-4B7D-A0B6-996F70977E8D}" src="https://github.com/user-attachments/assets/df99167d-25e7-4e8a-b829-ed7754c4b76d" />
+
+<img width="1578" height="868" alt="Screenshot 2026-10-14 212613" src="https://github.com/user-attachments/assets/577daa37-0417-4bd5-80c3-b2cb7f6a4568" />
+
+
+
+
+
 ## Sample reports
 
 These reports were generated using the current version of this pipeline.
