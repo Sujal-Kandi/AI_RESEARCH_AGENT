@@ -21,14 +21,6 @@ Critical facts still need human review.
 <img width="1578" height="868" alt="Screenshot 2026-10-14 212613" src="https://github.com/user-attachments/assets/577daa37-0417-4bd5-80c3-b2cb7f6a4568" />
 
 
-
-https://github.com/user-attachments/assets/97e76f4d-85f3-4029-98cc-4d9ce14377c8
-
-Full - Demo Video 
-
-https://youtu.be/rvKI0FcYK9A
-
-
 ## Sample reports
 
 These reports were generated using the current version of this pipeline.
